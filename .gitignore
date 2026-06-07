@@ -1,0 +1,31 @@
+# STM32CubeIDE build output
+Debug/
+Release/
+
+# Eclipse workspace-local data
+.metadata/
+.recommenders/
+
+# Compiler and linker output
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.size.stdout
+
+# Python cache and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
