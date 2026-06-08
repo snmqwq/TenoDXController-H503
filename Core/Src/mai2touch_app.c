@@ -7,16 +7,21 @@
 #include "i2c.h"
 #include "tusb.h"
 
+#define MAI2TOUCH_UART_DEBUG               0
+
+#if MAI2TOUCH_UART_DEBUG
+#include "usart.h"
+#endif
+
 #define MAI2TOUCH_CDC_ITF                 0U
 #define MAI2TOUCH_DEVICE_COUNT            2U
 #define MAI2TOUCH_CHANNEL_COUNT           17U
 #define MAI2TOUCH_ZONE_COUNT              34U
 #define MAI2TOUCH_I2C_REGISTER            0x00U
 #define MAI2TOUCH_I2C_DATA_LENGTH         35U
-#define MAI2TOUCH_I2C_VALID_STATUS        0x01U
 #define MAI2TOUCH_POLL_PERIOD_MS          10U
 #define MAI2TOUCH_DISCONNECTED_PERIOD_MS  500U
-#define MAI2TOUCH_TRANSFER_TIMEOUT_MS     20U
+#define MAI2TOUCH_TRANSFER_TIMEOUT_MS     50U
 #define MAI2TOUCH_FAILURE_LIMIT           4U
 #define MAI2TOUCH_SETUP_SAMPLE_COUNT      30U
 #define MAI2TOUCH_HISTORY_LENGTH          16U
@@ -24,6 +29,12 @@
 #define MAI2TOUCH_REPORT_LENGTH           9U
 #define MAI2TOUCH_COMMAND_MAX_LENGTH      8U
 #define MAI2TOUCH_RESPONSE_MAX_LENGTH     10U
+#if MAI2TOUCH_UART_DEBUG
+#define MAI2TOUCH_UART_PERIOD_MS          1000U
+#define MAI2TOUCH_UART_STAGGER_MS         500U
+#define MAI2TOUCH_UART_FRAME_LENGTH       41U
+#define MAI2TOUCH_UART_TIMEOUT_MS         10U
+#endif
 #define MAI2TOUCH_ERROR_TIMEOUT           0x80000000UL
 
 typedef enum
@@ -52,11 +63,16 @@ typedef struct
 
 typedef struct
 {
+    uint8_t raw[MAI2TOUCH_I2C_DATA_LENGTH];
     uint16_t setup_raw[MAI2TOUCH_CHANNEL_COUNT];
     uint32_t setup_sum[MAI2TOUCH_CHANNEL_COUNT];
     uint16_t history[MAI2TOUCH_CHANNEL_COUNT][MAI2TOUCH_HISTORY_LENGTH];
     mai2touch_detector_t detector[MAI2TOUCH_CHANNEL_COUNT];
     uint32_t next_poll_tick;
+#if MAI2TOUCH_UART_DEBUG
+    uint32_t next_uart_tick;
+#endif
+    uint32_t last_error;
     uint8_t setup_count;
     uint8_t failure_count;
     bool connected;
@@ -70,7 +86,8 @@ static const uint8_t mai2touch_i2c_addresses[MAI2TOUCH_DEVICE_COUNT] =
 };
 
 /* Zone bits are ordered A1-A8, B1-B8, C1-C2, D1-D8, E1-E8. */
-static const uint8_t mai2touch_zone_map[MAI2TOUCH_DEVICE_COUNT][MAI2TOUCH_CHANNEL_COUNT] =
+static const uint8_t
+    mai2touch_zone_map[MAI2TOUCH_DEVICE_COUNT][MAI2TOUCH_CHANNEL_COUNT] =
 {
     {
         12U, 23U, 31U, 5U, 13U, 24U, 32U, 17U, 6U,
@@ -83,9 +100,13 @@ static const uint8_t mai2touch_zone_map[MAI2TOUCH_DEVICE_COUNT][MAI2TOUCH_CHANNE
 };
 
 static mai2touch_device_t mai2touch_devices[MAI2TOUCH_DEVICE_COUNT];
-static uint8_t mai2touch_i2c_data[MAI2TOUCH_I2C_DATA_LENGTH];
+static uint8_t
+    mai2touch_rx_data[MAI2TOUCH_DEVICE_COUNT][MAI2TOUCH_I2C_DATA_LENGTH];
 static uint8_t mai2touch_active_device;
 static uint8_t mai2touch_schedule_cursor;
+#if MAI2TOUCH_UART_DEBUG
+static uint8_t mai2touch_uart_cursor;
+#endif
 static uint32_t mai2touch_transfer_start_tick;
 static uint32_t mai2touch_next_report_tick;
 static volatile bool mai2touch_transfer_active;
@@ -106,8 +127,7 @@ static void mai2touch_reset_all_setup(void);
 static void mai2touch_process_i2c(void);
 static bool mai2touch_start_due_read(void);
 static void mai2touch_start_read(uint8_t device_index);
-static void mai2touch_finish_success(void);
-static void mai2touch_finish_failure(uint32_t error);
+static void mai2touch_finish_read(bool success, uint32_t error);
 static void mai2touch_recover_i2c(void);
 static void mai2touch_process_raw_data(uint8_t device_index);
 static bool mai2touch_detect(mai2touch_region_t region,
@@ -124,6 +144,10 @@ static void mai2touch_queue_echo(uint8_t const *command, uint8_t length);
 static void mai2touch_send_response(void);
 static void mai2touch_send_report(void);
 static uint64_t mai2touch_build_zone_mask(void);
+#if MAI2TOUCH_UART_DEBUG
+static void mai2touch_send_uart_status(void);
+static void mai2touch_build_uart_frame(uint8_t device_index, uint8_t *frame);
+#endif
 static bool mai2touch_tick_due(uint32_t now, uint32_t due);
 static uint32_t mai2touch_next_periodic_tick(uint32_t previous,
                                              uint32_t now,
@@ -134,17 +158,26 @@ void mai2touch_app_init(void)
     uint32_t now = HAL_GetTick();
 
     memset(mai2touch_devices, 0, sizeof(mai2touch_devices));
-    memset(mai2touch_i2c_data, 0, sizeof(mai2touch_i2c_data));
+    memset(mai2touch_rx_data, 0, sizeof(mai2touch_rx_data));
     memset(mai2touch_command, 0, sizeof(mai2touch_command));
     memset(mai2touch_response, 0, sizeof(mai2touch_response));
 
     for (uint8_t device = 0U; device < MAI2TOUCH_DEVICE_COUNT; device++)
     {
+        mai2touch_reset_device_setup(device);
         mai2touch_devices[device].next_poll_tick = now;
+#if MAI2TOUCH_UART_DEBUG
+        mai2touch_devices[device].next_uart_tick =
+            now + MAI2TOUCH_UART_PERIOD_MS +
+            ((uint32_t)device * MAI2TOUCH_UART_STAGGER_MS);
+#endif
     }
 
     mai2touch_active_device = 0U;
     mai2touch_schedule_cursor = 0U;
+#if MAI2TOUCH_UART_DEBUG
+    mai2touch_uart_cursor = 0U;
+#endif
     mai2touch_transfer_start_tick = 0U;
     mai2touch_next_report_tick = now;
     mai2touch_transfer_active = false;
@@ -166,6 +199,9 @@ void mai2touch_app_task(void)
 
     if (!mai2touch_transfer_active)
     {
+#if MAI2TOUCH_UART_DEBUG
+        mai2touch_send_uart_status();
+#endif
         (void)mai2touch_start_due_read();
     }
 }
@@ -227,23 +263,16 @@ static void mai2touch_process_i2c(void)
 
     if (event == MAI2TOUCH_I2C_EVENT_COMPLETE)
     {
-        if (mai2touch_i2c_data[0] == MAI2TOUCH_I2C_VALID_STATUS)
-        {
-            mai2touch_finish_success();
-        }
-        else
-        {
-            mai2touch_finish_failure(HAL_I2C_ERROR_INVALID_PARAM);
-        }
+        mai2touch_finish_read(true, HAL_I2C_ERROR_NONE);
     }
     else if (event == MAI2TOUCH_I2C_EVENT_ERROR)
     {
-        mai2touch_finish_failure(error);
+        mai2touch_finish_read(false, error);
     }
     else if (timed_out)
     {
         mai2touch_recover_i2c();
-        mai2touch_finish_failure(MAI2TOUCH_ERROR_TIMEOUT);
+        mai2touch_finish_read(false, MAI2TOUCH_ERROR_TIMEOUT);
     }
 }
 
@@ -254,9 +283,11 @@ static bool mai2touch_start_due_read(void)
     for (uint8_t offset = 0U; offset < MAI2TOUCH_DEVICE_COUNT; offset++)
     {
         uint8_t device_index =
-            (uint8_t)((mai2touch_schedule_cursor + offset) % MAI2TOUCH_DEVICE_COUNT);
+            (uint8_t)((mai2touch_schedule_cursor + offset) %
+                      MAI2TOUCH_DEVICE_COUNT);
 
-        if (mai2touch_tick_due(now, mai2touch_devices[device_index].next_poll_tick))
+        if (mai2touch_tick_due(now,
+                              mai2touch_devices[device_index].next_poll_tick))
         {
             mai2touch_schedule_cursor =
                 (uint8_t)((device_index + 1U) % MAI2TOUCH_DEVICE_COUNT);
@@ -279,52 +310,53 @@ static void mai2touch_start_read(uint8_t device_index)
     }
 
     mai2touch_active_device = device_index;
-    memset(mai2touch_i2c_data, 0, sizeof(mai2touch_i2c_data));
+    memset(mai2touch_rx_data[device_index],
+           0,
+           MAI2TOUCH_I2C_DATA_LENGTH);
     mai2touch_i2c_event = MAI2TOUCH_I2C_EVENT_NONE;
     mai2touch_i2c_error = HAL_I2C_ERROR_NONE;
     mai2touch_transfer_start_tick = HAL_GetTick();
     mai2touch_transfer_active = true;
 
     result = HAL_I2C_Mem_Read_IT(&hi2c1,
-                                 (uint16_t)(mai2touch_i2c_addresses[device_index] << 1U),
+                                 (uint16_t)(mai2touch_i2c_addresses[device_index]
+                                            << 1U),
                                  MAI2TOUCH_I2C_REGISTER,
                                  I2C_MEMADD_SIZE_8BIT,
-                                 mai2touch_i2c_data,
+                                 mai2touch_rx_data[device_index],
                                  MAI2TOUCH_I2C_DATA_LENGTH);
 
     if (result != HAL_OK)
     {
-        mai2touch_transfer_active = false;
-        mai2touch_recover_i2c();
-        mai2touch_finish_failure((uint32_t)result);
+        mai2touch_finish_read(false, (uint32_t)result);
     }
 }
 
-static void mai2touch_finish_success(void)
+static void mai2touch_finish_read(bool success, uint32_t error)
 {
-    mai2touch_device_t *device = &mai2touch_devices[mai2touch_active_device];
+    mai2touch_device_t *device =
+        &mai2touch_devices[mai2touch_active_device];
     uint32_t now = HAL_GetTick();
 
-    if (!device->connected)
+    mai2touch_transfer_active = false;
+    device->last_error = error;
+
+    if (success)
     {
+        if (!device->connected)
+        {
+            mai2touch_reset_device_setup(mai2touch_active_device);
+        }
+
+        memcpy(device->raw,
+               mai2touch_rx_data[mai2touch_active_device],
+               MAI2TOUCH_I2C_DATA_LENGTH);
         device->connected = true;
-        mai2touch_reset_device_setup(mai2touch_active_device);
+        device->failure_count = 0U;
+        mai2touch_process_raw_data(mai2touch_active_device);
+        device->next_poll_tick = now + MAI2TOUCH_POLL_PERIOD_MS;
+        return;
     }
-
-    device->failure_count = 0U;
-    mai2touch_process_raw_data(mai2touch_active_device);
-    device->next_poll_tick =
-        mai2touch_next_periodic_tick(device->next_poll_tick,
-                                     now,
-                                     MAI2TOUCH_POLL_PERIOD_MS);
-}
-
-static void mai2touch_finish_failure(uint32_t error)
-{
-    mai2touch_device_t *device = &mai2touch_devices[mai2touch_active_device];
-    uint32_t now = HAL_GetTick();
-
-    (void)error;
 
     if (device->failure_count < MAI2TOUCH_FAILURE_LIMIT)
     {
@@ -333,17 +365,18 @@ static void mai2touch_finish_failure(uint32_t error)
 
     if (device->failure_count >= MAI2TOUCH_FAILURE_LIMIT)
     {
+        if (device->connected)
+        {
+            mai2touch_reset_device_setup(mai2touch_active_device);
+        }
+
         device->connected = false;
-        mai2touch_reset_device_setup(mai2touch_active_device);
         device->failure_count = MAI2TOUCH_FAILURE_LIMIT;
         device->next_poll_tick = now + MAI2TOUCH_DISCONNECTED_PERIOD_MS;
     }
     else
     {
-        device->next_poll_tick =
-            mai2touch_next_periodic_tick(device->next_poll_tick,
-                                         now,
-                                         MAI2TOUCH_POLL_PERIOD_MS);
+        device->next_poll_tick = now + MAI2TOUCH_POLL_PERIOD_MS;
     }
 }
 
@@ -366,8 +399,8 @@ static void mai2touch_process_raw_data(uint8_t device_index)
     {
         uint8_t raw_index = (uint8_t)(1U + (channel * 2U));
         uint16_t raw =
-            (uint16_t)(((uint16_t)mai2touch_i2c_data[raw_index] << 8U) |
-                       mai2touch_i2c_data[raw_index + 1U]);
+            (uint16_t)(((uint16_t)device->raw[raw_index] << 8U) |
+                       device->raw[raw_index + 1U]);
 
         if (!device->setup_complete)
         {
@@ -731,7 +764,8 @@ static void mai2touch_send_report(void)
     frame[0] = (uint8_t)'(';
     for (uint8_t index = 0U; index < 7U; index++)
     {
-        frame[index + 1U] = (uint8_t)((zone_mask >> (index * 5U)) & 0x1fU);
+        frame[index + 1U] =
+            (uint8_t)((zone_mask >> (index * 5U)) & 0x1fU);
     }
     frame[MAI2TOUCH_REPORT_LENGTH - 1U] = (uint8_t)')';
 
@@ -778,6 +812,73 @@ static uint64_t mai2touch_build_zone_mask(void)
 
     return mask & ((((uint64_t)1U) << MAI2TOUCH_ZONE_COUNT) - 1U);
 }
+
+#if MAI2TOUCH_UART_DEBUG
+static void mai2touch_send_uart_status(void)
+{
+    uint8_t frame[MAI2TOUCH_UART_FRAME_LENGTH];
+    uint32_t now = HAL_GetTick();
+
+    for (uint8_t offset = 0U; offset < MAI2TOUCH_DEVICE_COUNT; offset++)
+    {
+        uint8_t device_index =
+            (uint8_t)((mai2touch_uart_cursor + offset) %
+                      MAI2TOUCH_DEVICE_COUNT);
+        mai2touch_device_t *device = &mai2touch_devices[device_index];
+
+        if (!mai2touch_tick_due(now, device->next_uart_tick))
+        {
+            continue;
+        }
+
+        mai2touch_build_uart_frame(device_index, frame);
+        if (HAL_UART_Transmit(&huart1,
+                              frame,
+                              MAI2TOUCH_UART_FRAME_LENGTH,
+                              MAI2TOUCH_UART_TIMEOUT_MS) == HAL_OK)
+        {
+            device->next_uart_tick =
+                mai2touch_next_periodic_tick(device->next_uart_tick,
+                                             now,
+                                             MAI2TOUCH_UART_PERIOD_MS);
+            mai2touch_uart_cursor =
+                (uint8_t)((device_index + 1U) % MAI2TOUCH_DEVICE_COUNT);
+        }
+
+        break;
+    }
+}
+
+static void mai2touch_build_uart_frame(uint8_t device_index, uint8_t *frame)
+{
+    mai2touch_device_t const *device = &mai2touch_devices[device_index];
+    uint8_t checksum = 0U;
+
+    frame[0] = 0xa5U;
+    frame[1] = 0x5aU;
+    frame[2] = mai2touch_i2c_addresses[device_index];
+    frame[3] = device->connected ? 1U : 0U;
+    frame[4] = MAI2TOUCH_I2C_DATA_LENGTH;
+
+    if (device->connected)
+    {
+        memcpy(&frame[5], device->raw, MAI2TOUCH_I2C_DATA_LENGTH);
+    }
+    else
+    {
+        memset(&frame[5], 0, MAI2TOUCH_I2C_DATA_LENGTH);
+    }
+
+    for (uint8_t index = 2U;
+         index < (MAI2TOUCH_UART_FRAME_LENGTH - 1U);
+         index++)
+    {
+        checksum ^= frame[index];
+    }
+
+    frame[MAI2TOUCH_UART_FRAME_LENGTH - 1U] = checksum;
+}
+#endif
 
 static bool mai2touch_tick_due(uint32_t now, uint32_t due)
 {
