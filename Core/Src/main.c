@@ -28,6 +28,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "tusb.h"
+#include "aime_reader_app.h"
 #include "keyboard_app.h"
 #include "magic_config.h"
 #include "mai2led_app.h"
@@ -142,9 +143,9 @@ int main(void)
   MX_GPDMA1_Init();
   MX_USB_PCD_Init();
   MX_I2C1_Init();
-  MX_I2C2_Init();
   MX_TIM3_Init();
   MX_USART1_UART_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
     WS28XX_Init(&hws, &htim3, 250, TIM_CHANNEL_3, MAI2LED_APP_MAX_LED_TOTAL);
 
@@ -155,6 +156,7 @@ int main(void)
     }
 
 	tusb_init();
+    aime_reader_app_init();
     mai2touch_app_init();
     magic_config_init();
     keyboard_app_init(mai2led_app_restore_idle_lights);
@@ -172,6 +174,7 @@ int main(void)
 	while (1)
 	{
 		tud_task();
+        aime_reader_app_task();
         mai2touch_app_task();
 		keyboard_app_poll();
 		mai2led_app_task();
