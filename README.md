@@ -15,7 +15,9 @@
 - 空闲白灯或流动彩虹灯效，支持按键高亮。
 - 外部 Mai2LED 指令接管灯光后停止空闲灯效；长按 BTN8 五秒恢复。
 
-目前灯光和键盘配置模块已接入 magic 配置框架。触摸和读卡器已经分配 USB CDC 接口与 Flash 配置槽，具体应用协议仍可继续扩展。
+当前 `1.4-aime-touch_test` 分支已接入 PN532/Aime 读卡器状态机。触摸部分当前通过 I2C1
+中断读取两个 PSoC，并在 CDC0 输出固定 69 字节 raw 测试帧；这不是最终触摸算法输出。
+电脑迁移、分支基线和当前测试格式见 `MIGRATION.md`。
 
 ## 工程结构
 
@@ -26,6 +28,8 @@
 | `tinyusb/` | TinyUSB 协议栈 |
 | `Middlewares/` | WS28XX 驱动 |
 | `tools/magic_config_tool.py` | 交互式串口配置工具 |
+| `ref/` | Mai2LED、Mai2Touch、触摸算法和 Aime 参考资料 |
+| `MIGRATION.md` | 电脑迁移、环境导入和当前功能基线 |
 | `maimai_controller_H503.ioc` | STM32CubeMX 工程配置 |
 
 ## 构建
