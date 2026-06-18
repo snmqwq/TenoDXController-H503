@@ -43,8 +43,9 @@ https://github.com/snmqwq/TenoDXController-H503
 - 每个 PSoC 从 0x00 开始读 35 字节。
 - I2C1 使用中断方式：先 Transmit_IT 写寄存器地址，再 Receive_IT 读数据。
 - 连续 4 次失败判定掉线；掉线后 500 ms 轮询重连。
-- CDC0 每 5 ms 输出固定 69 字节：
-  00 + 0x08 的 raw[1..34] + 0x09 的 raw[1..34]
+- CDC0 每 5 ms 输出固定 70 字节：
+  00 + 0x08 的 raw[1..34] + 0x09 的 raw[1..34] + checksum
+- checksum 为前 69 字节的 8 位累加和。
 - 不发送两个设备各自的第一个状态字节。
 - 未连接设备对应的 34 字节填 00。
 - 当前是 PSoC raw 数据测试路径，最终触摸 setup raw、算法处理、区域映射和约 100 Hz

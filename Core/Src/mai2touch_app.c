@@ -12,7 +12,8 @@
 #define MAI2TOUCH_I2C_REGISTER             0x00U
 #define MAI2TOUCH_I2C_DATA_LENGTH          35U
 #define MAI2TOUCH_DEVICE_PAYLOAD_LENGTH    34U
-#define MAI2TOUCH_CDC_FRAME_LENGTH         69U
+#define MAI2TOUCH_CDC_DATA_LENGTH          69U
+#define MAI2TOUCH_CDC_FRAME_LENGTH         70U
 #define MAI2TOUCH_CONNECTED_POLL_MS         5U
 #define MAI2TOUCH_DISCONNECTED_POLL_MS    500U
 #define MAI2TOUCH_CDC_PERIOD_MS             5U
@@ -375,6 +376,7 @@ static void mai2touch_record_failure(mai2touch_device_t *device,
 
 static void mai2touch_send_cdc_frame(uint32_t now)
 {
+    uint8_t checksum = 0U;
     uint8_t index;
 
     if (!mai2touch_tick_due(now, mai2touch_next_cdc_tick))
@@ -401,6 +403,12 @@ static void mai2touch_send_cdc_frame(uint32_t now)
             memset(destination, 0, MAI2TOUCH_DEVICE_PAYLOAD_LENGTH);
         }
     }
+
+    for (index = 0U; index < MAI2TOUCH_CDC_DATA_LENGTH; index++)
+    {
+        checksum += mai2touch_cdc_frame[index];
+    }
+    mai2touch_cdc_frame[MAI2TOUCH_CDC_DATA_LENGTH] = checksum;
 
     if (!tud_cdc_n_ready(MAI2TOUCH_CDC_ITF) ||
         (tud_cdc_n_write_available(MAI2TOUCH_CDC_ITF) <
