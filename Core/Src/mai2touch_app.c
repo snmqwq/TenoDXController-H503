@@ -14,9 +14,9 @@
 #define MAI2TOUCH_DEVICE_PAYLOAD_LENGTH    34U
 #define MAI2TOUCH_CDC_DATA_LENGTH          69U
 #define MAI2TOUCH_CDC_FRAME_LENGTH         70U
-#define MAI2TOUCH_CONNECTED_POLL_MS         5U
+#define MAI2TOUCH_CONNECTED_POLL_MS         8U   // 从5改为8，保证I2C读取频率高于USB发送频率以获取最新数据
 #define MAI2TOUCH_DISCONNECTED_POLL_MS    500U
-#define MAI2TOUCH_CDC_PERIOD_MS             5U
+#define MAI2TOUCH_CDC_PERIOD_MS            16U   // 从5改为16，实现 1000/16 ≈ 62.5Hz (接近预期的60Hz)
 #define MAI2TOUCH_TRANSFER_TIMEOUT_MS      50U
 #define MAI2TOUCH_READY_TRIALS              3U
 #define MAI2TOUCH_READY_TIMEOUT_MS         10U
@@ -379,13 +379,15 @@ static void mai2touch_send_cdc_frame(uint32_t now)
     uint8_t checksum = 0U;
     uint8_t index;
 
+    // 控制发送频率为60Hz (每16ms执行一次)
     if (!mai2touch_tick_due(now, mai2touch_next_cdc_tick))
     {
         return;
     }
     mai2touch_next_cdc_tick = now + MAI2TOUCH_CDC_PERIOD_MS;
 
-    mai2touch_cdc_frame[0] = 0x00U;
+    mai2touch_cdc_frame[0] = 0x00U; // 上位机校验用的Header (buffer[0])
+
     for (index = 0U; index < MAI2TOUCH_DEVICE_COUNT; index++)
     {
         uint8_t *destination =
@@ -394,9 +396,15 @@ static void mai2touch_send_cdc_frame(uint32_t now)
 
         if (mai2touch_devices[index].connected)
         {
-            memcpy(destination,
-                   &mai2touch_devices[index].raw[1],
-                   MAI2TOUCH_DEVICE_PAYLOAD_LENGTH);
+            // 解决大小端不一致的问题：
+            // PSoC从机发送的是 Big-Endian (高位在前)，即 raw[1]=High, raw[2]=Low
+            // C#上位机读取的是 Little-Endian (低位在前)，即 buffer[1]=Low, buffer[2]=High
+            // 因此在这里进行字节序翻转
+            for (uint8_t ch = 0; ch < 17; ch++)
+            {
+                destination[ch * 2]     = mai2touch_devices[index].raw[1 + ch * 2 + 1]; // 填入低位
+                destination[ch * 2 + 1] = mai2touch_devices[index].raw[1 + ch * 2];     // 填入高位
+            }
         }
         else
         {
@@ -404,11 +412,12 @@ static void mai2touch_send_cdc_frame(uint32_t now)
         }
     }
 
+    // 计算 Checksum (累加 buffer[0] 到 buffer[68])
     for (index = 0U; index < MAI2TOUCH_CDC_DATA_LENGTH; index++)
     {
         checksum += mai2touch_cdc_frame[index];
     }
-    mai2touch_cdc_frame[MAI2TOUCH_CDC_DATA_LENGTH] = checksum;
+    mai2touch_cdc_frame[MAI2TOUCH_CDC_DATA_LENGTH] = checksum; // 存入 buffer[69]
 
     if (!tud_cdc_n_ready(MAI2TOUCH_CDC_ITF) ||
         (tud_cdc_n_write_available(MAI2TOUCH_CDC_ITF) <
@@ -417,6 +426,7 @@ static void mai2touch_send_cdc_frame(uint32_t now)
         return;
     }
 
+    // 通过 CDC 发送 70 bytes
     if (tud_cdc_n_write(MAI2TOUCH_CDC_ITF,
                         mai2touch_cdc_frame,
                         MAI2TOUCH_CDC_FRAME_LENGTH) ==
