@@ -26,8 +26,11 @@
 #define PN532_DEBUG_BUFFER_LENGTH         224U
 #define PN532_RAW_DEBUG_LENGTH            96U
 #define PN532_RAW_DEBUG_IDLE_MS            2U
+#define PN532_POWER_UP_DELAY_MS           100U
 #define PN532_INIT_INTERVAL_MS            100U
-#define PN532_WAKE_DELAY_MS               10U
+#define PN532_INIT_RESPONSE_TIMEOUT_MS    300U
+#define PN532_INIT_RETRY_LIMIT              3U
+#define PN532_INIT_RESTART_DELAY_MS       250U
 #define PN532_POLL_INTERVAL_MS            33U
 #define PN532_POLL_TIMEOUT_MS             150U
 #define PN532_COMMAND_TIMEOUT_MS          500U
@@ -61,6 +64,13 @@ typedef enum
     PN532_READ_READING
 } pn532_read_state_t;
 
+typedef enum
+{
+    PN532_INIT_POWER_UP,
+    PN532_INIT_SEND_COMMAND,
+    PN532_INIT_WAIT_RESPONSE
+} pn532_init_state_t;
+
 typedef struct
 {
     bool present;
@@ -80,7 +90,10 @@ typedef struct
 typedef struct
 {
     bool initialized;
+    pn532_init_state_t init_state;
     uint8_t init_index;
+    uint8_t init_attempts;
+    uint8_t init_expected_response;
     uint8_t poll_counter;
     pn532_read_state_t read_state;
     uint32_t next_action_tick;
@@ -156,10 +169,12 @@ static bool card_is_present(uint32_t now);
 static void pn532_reset_rx_parser(void);
 static void pn532_flush_uart_rx(void);
 static bool pn532_start_uart_receive(void);
+static void pn532_restart_init(uint32_t now);
 static void pn532_uart_service_task(void);
 static void pn532_uart_rx_task(void);
 static void pn532_parse_byte(uint8_t data);
 static void pn532_handle_payload(const uint8_t *payload, uint8_t length);
+static bool pn532_send_wake_and_first_init(void);
 static bool pn532_send_payload(const uint8_t *payload, uint8_t length);
 static void pn532_set_read_state(pn532_read_state_t state, uint32_t now);
 static void pn532_set_idle(uint32_t now);
@@ -187,10 +202,6 @@ static bool aime_encode_byte(uint8_t data, uint8_t *output, uint8_t *length);
 
 void aime_reader_app_init(void)
 {
-    static const uint8_t wake_sequence[] =
-    {
-        0x55U, 0x55U, 0x00U, 0x00U, 0x00U
-    };
     uint32_t now = HAL_GetTick();
 
     memset(&card_state, 0, sizeof(card_state));
@@ -198,6 +209,7 @@ void aime_reader_app_init(void)
     memset(&host, 0, sizeof(host));
 
     pn532.read_state = PN532_READ_IDLE;
+    pn532.init_state = PN532_INIT_POWER_UP;
     pn532.last_physical_card_tick = now - PN532_CARD_DEBOUNCE_MS;
     pn532.link_check_tick = now;
     pn532_reset_rx_parser();
@@ -223,17 +235,7 @@ void aime_reader_app_init(void)
     {
         pn532_debug_text("[PN532] USART2 RX PB5 IDLE LOW\r\n");
     }
-    pn532_debug_hex("[PN532 TX WAKE] ",
-                    wake_sequence,
-                    sizeof(wake_sequence));
-    if (HAL_UART_Transmit(&huart2,
-                          (uint8_t *)wake_sequence,
-                          sizeof(wake_sequence),
-                          PN532_TX_TIMEOUT_MS) != HAL_OK)
-    {
-        pn532_debug_text("[PN532 ERR] WAKE TX FAILED\r\n");
-    }
-    pn532.next_action_tick = now + PN532_WAKE_DELAY_MS;
+    pn532.next_action_tick = now + PN532_POWER_UP_DELAY_MS;
 }
 
 void aime_reader_app_task(void)
@@ -500,6 +502,31 @@ static bool pn532_start_uart_receive(void)
     return true;
 }
 
+static void pn532_restart_init(uint32_t now)
+{
+    pn532_debug_text("[PN532 INIT] RESTART\r\n");
+
+    (void)HAL_UART_AbortReceive(&huart2);
+    pn532_flush_uart_rx();
+    pn532_reset_rx_parser();
+    if (!pn532_start_uart_receive())
+    {
+        pn532_debug_text("[PN532 ERR] RX INTERRUPT RESTART FAILED\r\n");
+    }
+
+    pn532.initialized = false;
+    pn532.init_state = PN532_INIT_POWER_UP;
+    pn532.init_index = 0U;
+    pn532.init_attempts = 0U;
+    pn532.init_expected_response = 0U;
+    pn532.poll_counter = 0U;
+    pn532.read_state = PN532_READ_IDLE;
+    pn532.link_connected = false;
+    pn532.no_response_reported = false;
+    pn532.link_check_tick = now;
+    pn532.next_action_tick = HAL_GetTick() + PN532_INIT_RESTART_DELAY_MS;
+}
+
 static void pn532_uart_service_task(void)
 {
     uint32_t error;
@@ -653,6 +680,13 @@ static void pn532_parse_byte(uint8_t data)
             {
                 pn532_note_valid_rx(HAL_GetTick());
                 pn532_debug_text("[PN532 RX] NACK\r\n");
+                if (!pn532.initialized &&
+                    (pn532.init_state == PN532_INIT_WAIT_RESPONSE))
+                {
+                    pn532.init_state = PN532_INIT_SEND_COMMAND;
+                    pn532.next_action_tick =
+                        HAL_GetTick() + PN532_INIT_INTERVAL_MS;
+                }
             }
             else
             {
@@ -674,6 +708,21 @@ static void pn532_handle_payload(const uint8_t *payload, uint8_t length)
     pn532_note_valid_rx(now);
     pn532_debug_hex("[PN532 RX] ", payload, length);
 
+    if (!pn532.initialized &&
+        (pn532.init_state == PN532_INIT_WAIT_RESPONSE) &&
+        (length >= 2U) &&
+        (payload[0] == PN532_PN532_TO_HOST) &&
+        (payload[1] == pn532.init_expected_response))
+    {
+        pn532.init_index++;
+        pn532.init_attempts = 0U;
+        pn532.init_expected_response = 0U;
+        pn532.init_state = PN532_INIT_SEND_COMMAND;
+        pn532.next_action_tick = now + PN532_INIT_INTERVAL_MS;
+        pn532_debug_text("[PN532 INIT] RESPONSE OK\r\n");
+        return;
+    }
+
     if ((length >= 2U) &&
         (payload[0] == PN532_PN532_TO_HOST) &&
         (payload[1] == PN532_IN_LIST_PASSIVE_TARGET_ACK))
@@ -686,6 +735,32 @@ static void pn532_handle_payload(const uint8_t *payload, uint8_t length)
     {
         pn532_handle_data_response(payload, length, now);
     }
+}
+
+static bool pn532_send_wake_and_first_init(void)
+{
+    static const uint8_t packet[] =
+    {
+        0x55U, 0x55U, 0x00U, 0x00U, 0x00U,
+        0x00U, 0x00U, 0xFFU, 0x03U, 0xFDU,
+        PN532_TFI, 0x14U, 0x01U, 0x17U, 0x00U
+    };
+    HAL_StatusTypeDef result;
+
+    pn532_debug_hex("[PN532 TX WAKE+INIT] ",
+                    packet,
+                    sizeof(packet));
+    result = HAL_UART_Transmit(&huart2,
+                               (uint8_t *)packet,
+                               sizeof(packet),
+                               PN532_TX_TIMEOUT_MS);
+    if (result != HAL_OK)
+    {
+        pn532_debug_text("[PN532 ERR] WAKE+INIT TX FAILED\r\n");
+        return false;
+    }
+
+    return true;
 }
 
 static bool pn532_send_payload(const uint8_t *payload, uint8_t length)
@@ -782,15 +857,74 @@ static void pn532_task(void)
             return;
         }
 
+        if (pn532.init_state == PN532_INIT_POWER_UP)
+        {
+            if (pn532.init_attempts >= PN532_INIT_RETRY_LIMIT)
+            {
+                pn532_restart_init(now);
+                return;
+            }
+
+            pn532.init_attempts++;
+            pn532.init_expected_response = 0x15U;
+            pn532_debug_status("[PN532 INIT] SEND ATTEMPT ",
+                               pn532.init_attempts);
+            if (pn532_send_wake_and_first_init())
+            {
+                pn532.init_state = PN532_INIT_WAIT_RESPONSE;
+                pn532.next_action_tick =
+                    HAL_GetTick() + PN532_INIT_RESPONSE_TIMEOUT_MS;
+            }
+            else
+            {
+                pn532.next_action_tick =
+                    HAL_GetTick() + PN532_INIT_RESTART_DELAY_MS;
+            }
+            return;
+        }
+
+        if (pn532.init_state == PN532_INIT_WAIT_RESPONSE)
+        {
+            pn532_debug_status("[PN532 INIT] RESPONSE TIMEOUT ATTEMPT ",
+                               pn532.init_attempts);
+            pn532.init_state = PN532_INIT_SEND_COMMAND;
+            pn532.next_action_tick = now + PN532_INIT_INTERVAL_MS;
+            return;
+        }
+
+        if (pn532.init_state != PN532_INIT_SEND_COMMAND)
+        {
+            pn532_restart_init(now);
+            return;
+        }
+
         if (pn532.init_index < sizeof(pn532_init_lengths))
         {
+            if (pn532.init_attempts >= PN532_INIT_RETRY_LIMIT)
+            {
+                pn532_restart_init(now);
+                return;
+            }
+
+            pn532.init_attempts++;
+            pn532.init_expected_response =
+                (uint8_t)(pn532_init_commands[pn532.init_index][1] + 1U);
+            pn532_debug_status("[PN532 INIT] SEND ATTEMPT ",
+                               pn532.init_attempts);
+
             if (pn532_send_payload(
                     pn532_init_commands[pn532.init_index],
                     pn532_init_lengths[pn532.init_index]))
             {
-                pn532.init_index++;
+                pn532.init_state = PN532_INIT_WAIT_RESPONSE;
+                pn532.next_action_tick =
+                    HAL_GetTick() + PN532_INIT_RESPONSE_TIMEOUT_MS;
             }
-            pn532.next_action_tick = now + PN532_INIT_INTERVAL_MS;
+            else
+            {
+                pn532.next_action_tick =
+                    HAL_GetTick() + PN532_INIT_INTERVAL_MS;
+            }
             return;
         }
 
