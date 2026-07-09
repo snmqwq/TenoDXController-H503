@@ -10,7 +10,7 @@
 #define MAI2TOUCH_I2C_DATA_LENGTH          35U
 #define MAI2TOUCH_DEVICE_PAYLOAD_LENGTH    34U
 #define MAI2TOUCH_CDC_FRAME_LENGTH         70U
-#define MAI2TOUCH_CDC_PERIOD_MS            16U
+#define MAI2TOUCH_CDC_PERIOD_MS            5U
 
 // 新增：适配上位机 34 通道下发的长度定义
 #define MAI2TOUCH_HOST_RX_FRAME_LENGTH     139U
