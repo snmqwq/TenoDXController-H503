@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import shlex
 import sys
 import time
 
@@ -290,7 +291,7 @@ def require_ok(response: MagicResponse) -> None:
 
 
 def pause() -> None:
-    input("\nPress Enter to continue...")
+    input("\n按 Enter 继续...")
 
 
 def ask(prompt: str, default: str | None = None) -> str:
@@ -344,10 +345,10 @@ def list_serial_ports() -> list[str]:
 
     ports = list(list_ports.comports())
     if not ports:
-        print("No serial ports found.")
+        print("未发现串口。")
         return []
 
-    print("\nSerial ports:")
+    print("\n串口列表:")
     for index, port in enumerate(ports, 1):
         print(f"  {index}. {port.device}  {port.description}")
 
@@ -358,21 +359,21 @@ def choose_port(default: str | None) -> str:
     ports = list_serial_ports()
 
     if default:
-        selected = ask("Port", default)
+        selected = ask("串口", default)
         return selected
 
     if not ports:
-        return ask("Port")
+        return ask("串口")
 
     while True:
-        value = ask("Select port number or name", "1")
+        value = ask("选择串口编号或名称", "1")
         if value.isdigit():
             index = int(value)
             if 1 <= index <= len(ports):
                 return ports[index - 1]
         elif value:
             return value
-        print("Invalid port selection.")
+        print("串口选择无效。")
 
 
 def connect(default_port: str | None, baudrate: int, timeout: float) -> MagicConfigClient:
@@ -380,12 +381,12 @@ def connect(default_port: str | None, baudrate: int, timeout: float) -> MagicCon
         try:
             port = choose_port(default_port)
             client = MagicConfigClient(port, baudrate, timeout)
-            print(f"Connected: {port}")
+            print(f"已连接: {port}")
             return client
         except Exception as exc:
-            print(f"Connect failed: {exc}")
+            print(f"连接失败: {exc}")
             default_port = None
-            if ask("Try again? y/n", "y").lower() not in ("y", "yes"):
+            if ask("重试? y/n", "y").lower() not in ("y", "yes"):
                 raise
 
 
@@ -396,43 +397,6 @@ def read_light(client: MagicConfigClient) -> tuple[int | None, bool | None]:
     led_value = led_per_bit.payload[0] if led_per_bit and led_per_bit.ok and led_per_bit.payload else None
     rainbow_value = bool(rainbow.payload[0]) if rainbow and rainbow.ok and rainbow.payload else None
     return led_value, rainbow_value
-
-
-def light_menu(client: MagicConfigClient) -> None:
-    while True:
-        print("\nLight config")
-        print("  1. Show current config")
-        print("  2. Set LED_PER_BIT")
-        print("  3. Set rainbow mode")
-        print("  4. Save to flash")
-        print("  5. Load defaults in RAM")
-        print("  0. Back")
-
-        choice = ask("Choice", "1")
-        if choice == "0":
-            return
-
-        if choice == "1":
-            led_per_bit, rainbow = read_light(client)
-            if led_per_bit is not None:
-                print(f"LED_PER_BIT = {led_per_bit}")
-            if rainbow is not None:
-                print(f"Rainbow = {'on' if rainbow else 'off'}")
-            pause()
-        elif choice == "2":
-            current, _ = read_light(client)
-            value = ask_u8("LED_PER_BIT", current if current is not None else 2)
-            safe_request(client, MODULES["light"], COMMANDS["write"], LIGHT_PARAM_LED_PER_BIT, bytes([value]))
-        elif choice == "3":
-            _, current = read_light(client)
-            enabled = ask_bool("Rainbow", current if current is not None else False)
-            safe_request(client, MODULES["light"], COMMANDS["write"], LIGHT_PARAM_RAINBOW_ENABLE, bytes([1 if enabled else 0]))
-        elif choice == "4":
-            safe_request(client, MODULES["light"], COMMANDS["save"])
-        elif choice == "5":
-            safe_request(client, MODULES["light"], COMMANDS["defaults"])
-        else:
-            print("Unknown choice.")
 
 
 def read_keyboard_key(client: MagicConfigClient, index: int) -> int | None:
@@ -452,74 +416,325 @@ def show_keyboard(client: MagicConfigClient) -> None:
         print(f"  key{index}: 0x{value:02X} ({key_name(value)}){fixed}")
 
 
-def keyboard_menu(client: MagicConfigClient) -> None:
-    while True:
-        print("\nKeyboard config")
-        print("  1. Show keys")
-        print("  2. Set one key (8..10)")
-        print("  3. Set key8/key9/key10 together")
-        print("  4. Save to flash")
-        print("  5. Load defaults in RAM")
-        print("  0. Back")
+def print_general_help() -> None:
+    print(
+        """
+可用命令:
+  help [type]                 显示帮助；type 可为 led/touch/aime/keyboard/dfu/raw
+  led <command> [args]        灯光配置
+  keyboard <command> [args]   键盘配置
+  touch help                  触摸配置占位，当前暂不完善
+  aime help                   Aime 读卡配置占位，当前暂不完善
+  dfu enter                   进入 DFU
+  raw <module> <cmd> <param> [payload bytes...]
+  exit                        断开当前串口并返回串口连接层
 
-        choice = ask("Choice", "1")
-        if choice == "0":
-            return
-
-        if choice == "1":
-            show_keyboard(client)
-            pause()
-        elif choice == "2":
-            index = ask_u8("Key index 8..10", KEYBOARD_CONFIG_KEY_FIRST)
-            if not KEYBOARD_CONFIG_KEY_FIRST <= index < KEYBOARD_CONFIG_KEY_FIRST + KEYBOARD_CONFIG_KEY_COUNT:
-                print("Only key8, key9 and key10 are configurable.")
-                continue
-            current = read_keyboard_key(client, index)
-            value = ask_key("HID key name or byte", current)
-            safe_request(client, MODULES["keyboard"], COMMANDS["write"], index, bytes([value]))
-        elif choice == "3":
-            current = []
-            for index in range(KEYBOARD_CONFIG_KEY_FIRST, KEYBOARD_CONFIG_KEY_FIRST + KEYBOARD_CONFIG_KEY_COUNT):
-                current.append(read_keyboard_key(client, index))
-            values = []
-            for offset in range(KEYBOARD_CONFIG_KEY_COUNT):
-                default = current[offset] if current[offset] is not None else None
-                values.append(ask_key(f"key{KEYBOARD_CONFIG_KEY_FIRST + offset}", default))
-            safe_request(client, MODULES["keyboard"], COMMANDS["write"], KEYBOARD_PARAM_CONFIG_KEYS, bytes(values))
-        elif choice == "4":
-            safe_request(client, MODULES["keyboard"], COMMANDS["save"])
-        elif choice == "5":
-            safe_request(client, MODULES["keyboard"], COMMANDS["defaults"])
-        else:
-            print("Unknown choice.")
+示例:
+  led get
+  led set led-per-bit 2
+  led set rainbow on
+  keyboard get
+  keyboard set 8 a
+  keyboard set-all 3 kp_multiply 9
+  raw light read 0x01
+""".strip()
+    )
 
 
-def raw_menu(client: MagicConfigClient) -> None:
-    print("\nRaw magic request")
-    try:
-        module = parse_module(ask("Module global/touch/light/reader/keyboard or byte", "light"))
-        command = parse_command(ask("Command read/write/save/defaults/info/enter-dfu or byte", "info"))
-        param = ask_u8("Param", 0)
-        payload_text = ask("Payload bytes separated by spaces", "")
-        payload = bytes(parse_u8(item) for item in payload_text.split()) if payload_text else b""
-    except ValueError as exc:
-        print(f"Invalid input: {exc}")
-        pause()
+def print_connection_help() -> None:
+    print(
+        """
+串口连接层命令:
+  ports                       列出串口
+  list                        同 ports
+  refresh                     刷新串口列表
+  connect <编号|COMx>         连接串口
+  <编号>                      直接连接列表中的串口编号
+  help                        显示本说明
+  exit                        退出工具
+""".strip()
+    )
+
+
+def print_led_help() -> None:
+    print(
+        """
+led 命令:
+  led get                     读取 LED_PER_BIT 和 rainbow
+  led set led-per-bit <0..255>
+                              设置每个逻辑灯位对应的实际灯珠数量
+  led set rainbow <on|off>    设置空闲彩虹灯效
+  led save                    保存灯光配置到 Flash
+  led defaults                恢复灯光默认配置到 RAM
+  led info                    读取固件暴露的灯光参数列表
+""".strip()
+    )
+
+
+def print_keyboard_help() -> None:
+    print(
+        """
+keyboard 命令:
+  keyboard get                读取全部 11 个 HID 键位
+  keyboard get <0..10>        读取指定键位
+  keyboard set <8|9|10> <hid-key|byte>
+                              设置可配置键位；0..7 为固定键
+  keyboard set-all <key8> <key9> <key10>
+                              一次设置 key8/key9/key10
+  keyboard save               保存键盘配置到 Flash
+  keyboard defaults           恢复键盘默认配置到 RAM
+  keyboard keys               列出可用 HID key 名称
+  keyboard info               读取固件暴露的键盘参数信息
+""".strip()
+    )
+
+
+def print_touch_help() -> None:
+    print(
+        """
+touch 命令:
+  touch help                  显示本说明
+
+说明:
+  当前先不完善 touch 配置命令，不会向设备发送 touch 配置请求。
+  后续触摸阈值等参数需要先确认固件端协议和参数含义后再接入。
+""".strip()
+    )
+
+
+def print_aime_help() -> None:
+    print(
+        """
+aime 命令:
+  aime help                   显示本说明
+
+说明:
+  当前先不完善 Aime 读卡配置命令，不会向设备发送 aime/reader 配置请求。
+  后续读卡器参数需要先确认固件端协议和参数含义后再接入。
+""".strip()
+    )
+
+
+def print_dfu_help() -> None:
+    print(
+        """
+dfu 命令:
+  dfu enter                   发送 DFU 进入命令
+
+参数:
+  执行 dfu enter 后需要输入 DFU 进行二次确认。
+  设备接受后 USB 会断开并重新枚举到 DFU。
+""".strip()
+    )
+
+
+def print_raw_help() -> None:
+    print(
+        """
+raw 命令:
+  raw <module> <command> <param> [payload bytes...]
+
+module:
+  global, touch, light, reader, keyboard，或 0x00..0xFF
+
+command:
+  read, write, save, defaults, info, read-all, write-all, save-all, enter-dfu
+  或 0x00..0xFF
+
+示例:
+  raw light read 0x01
+  raw keyboard write 8 0x04
+  raw global enter-dfu 0 0xA5
+""".strip()
+    )
+
+
+def print_help(topic: str | None = None) -> None:
+    if topic is None:
+        print_general_help()
         return
 
-    safe_request(client, module, command, param, payload)
-    pause()
+    lowered = topic.lower()
+    if lowered == "led":
+        print_led_help()
+    elif lowered == "keyboard":
+        print_keyboard_help()
+    elif lowered == "touch":
+        print_touch_help()
+    elif lowered in ("aime", "reader"):
+        print_aime_help()
+    elif lowered == "dfu":
+        print_dfu_help()
+    elif lowered == "raw":
+        print_raw_help()
+    else:
+        print(f"未知帮助主题: {topic}")
 
 
-def dfu_menu(client: MagicConfigClient) -> None:
-    print("\nEnter DFU")
-    print("This sends: module=0x00 cmd=0x84 param=0x00 payload=[0xA5].")
-    print("If the device accepts it, USB will disconnect after about 100 ms.")
+def command_error(message: str, topic: str | None = None) -> None:
+    print(f"错误: {message}")
+    if topic:
+        print(f"输入 help {topic} 查看用法。")
 
-    confirm = ask("Type DFU to continue", "")
+
+def print_hid_keys() -> None:
+    names = sorted(set(HID_KEY_NAMES.values()))
+    print("可用 HID key 名称:")
+    for index in range(0, len(names), 10):
+        print("  " + "  ".join(names[index:index + 10]))
+    print("也可以直接输入 0x00..0xFF。")
+
+
+def cmd_led(client: MagicConfigClient, argv: list[str]) -> None:
+    if not argv or argv[0].lower() in ("help", "-h", "--help"):
+        print_led_help()
+        return
+
+    command = argv[0].lower()
+    if command in ("get", "show"):
+        led_per_bit, rainbow = read_light(client)
+        if led_per_bit is not None:
+            print(f"LED_PER_BIT = {led_per_bit}")
+        if rainbow is not None:
+            print(f"Rainbow = {'on' if rainbow else 'off'}")
+        return
+
+    if command == "set":
+        if len(argv) != 3:
+            command_error("led set 需要参数: <led-per-bit|rainbow> <value>", "led")
+            return
+        field = argv[1].lower().replace("_", "-")
+        try:
+            if field in ("led-per-bit", "led-perbit", "per-bit"):
+                value = parse_u8(argv[2])
+                safe_request(client, MODULES["light"], COMMANDS["write"], LIGHT_PARAM_LED_PER_BIT, bytes([value]))
+            elif field == "rainbow":
+                enabled = parse_bool(argv[2])
+                safe_request(client, MODULES["light"], COMMANDS["write"], LIGHT_PARAM_RAINBOW_ENABLE, bytes([1 if enabled else 0]))
+            else:
+                command_error(f"未知 led 参数: {argv[1]}", "led")
+        except ValueError as exc:
+            command_error(str(exc), "led")
+        return
+
+    if command == "save":
+        safe_request(client, MODULES["light"], COMMANDS["save"])
+        return
+
+    if command in ("defaults", "default"):
+        safe_request(client, MODULES["light"], COMMANDS["defaults"])
+        return
+
+    if command == "info":
+        safe_request(client, MODULES["light"], COMMANDS["info"])
+        return
+
+    command_error(f"未知 led 命令: {argv[0]}", "led")
+
+
+def cmd_keyboard(client: MagicConfigClient, argv: list[str]) -> None:
+    if not argv or argv[0].lower() in ("help", "-h", "--help"):
+        print_keyboard_help()
+        return
+
+    command = argv[0].lower()
+    if command in ("get", "show", "list"):
+        if len(argv) == 1:
+            show_keyboard(client)
+            return
+        if len(argv) != 2:
+            command_error("keyboard get 只接受 0 或 1 个键位参数。", "keyboard")
+            return
+        try:
+            index = parse_u8(argv[1])
+        except ValueError as exc:
+            command_error(str(exc), "keyboard")
+            return
+        if index >= KEYBOARD_TOTAL_KEYS:
+            command_error("键位范围必须是 0..10。", "keyboard")
+            return
+        value = read_keyboard_key(client, index)
+        if value is not None:
+            fixed = "fixed" if index < KEYBOARD_CONFIG_KEY_FIRST else "configurable"
+            print(f"key{index}: 0x{value:02X} ({key_name(value)}) {fixed}")
+        return
+
+    if command == "set":
+        if len(argv) != 3:
+            command_error("keyboard set 需要参数: <8|9|10> <hid-key|byte>", "keyboard")
+            return
+        try:
+            index = parse_u8(argv[1])
+            value = parse_key(argv[2])
+        except ValueError as exc:
+            command_error(str(exc), "keyboard")
+            return
+        if not KEYBOARD_CONFIG_KEY_FIRST <= index < KEYBOARD_CONFIG_KEY_FIRST + KEYBOARD_CONFIG_KEY_COUNT:
+            command_error("只有 key8、key9、key10 可配置。", "keyboard")
+            return
+        safe_request(client, MODULES["keyboard"], COMMANDS["write"], index, bytes([value]))
+        return
+
+    if command == "set-all":
+        if len(argv) != 4:
+            command_error("keyboard set-all 需要参数: <key8> <key9> <key10>", "keyboard")
+            return
+        try:
+            values = bytes(parse_key(item) for item in argv[1:])
+        except ValueError as exc:
+            command_error(str(exc), "keyboard")
+            return
+        safe_request(client, MODULES["keyboard"], COMMANDS["write"], KEYBOARD_PARAM_CONFIG_KEYS, values)
+        return
+
+    if command == "save":
+        safe_request(client, MODULES["keyboard"], COMMANDS["save"])
+        return
+
+    if command in ("defaults", "default"):
+        safe_request(client, MODULES["keyboard"], COMMANDS["defaults"])
+        return
+
+    if command == "info":
+        safe_request(client, MODULES["keyboard"], COMMANDS["info"])
+        return
+
+    if command == "keys":
+        print_hid_keys()
+        return
+
+    command_error(f"未知 keyboard 命令: {argv[0]}", "keyboard")
+
+
+def cmd_touch(argv: list[str]) -> None:
+    if not argv or argv[0].lower() in ("help", "-h", "--help"):
+        print_touch_help()
+        return
+    print_touch_help()
+    print(f"\n未执行: touch {argv[0]} 当前未实现。")
+
+
+def cmd_aime(argv: list[str]) -> None:
+    if not argv or argv[0].lower() in ("help", "-h", "--help"):
+        print_aime_help()
+        return
+    print_aime_help()
+    print(f"\n未执行: aime {argv[0]} 当前未实现。")
+
+
+def cmd_dfu(client: MagicConfigClient, argv: list[str]) -> None:
+    if not argv or argv[0].lower() in ("help", "-h", "--help"):
+        print_dfu_help()
+        return
+
+    if argv[0].lower() != "enter" or len(argv) != 1:
+        command_error("dfu 目前只支持 enter。", "dfu")
+        return
+
+    print("将发送 DFU 进入命令: module=0x00 cmd=0x84 param=0x00 payload=[0xA5]")
+    confirm = ask("输入 DFU 确认", "")
     if confirm != "DFU":
-        print("Canceled.")
-        pause()
+        print("已取消。")
         return
 
     response = safe_request(
@@ -529,56 +744,172 @@ def dfu_menu(client: MagicConfigClient) -> None:
         GLOBAL_PARAM_ALL,
         bytes([GLOBAL_DFU_CONFIRM]),
     )
-
     if response and response.ok:
-        print("DFU accepted. Wait for USB re-enumeration.")
+        print("DFU 命令已接受，请等待 USB 重新枚举。")
     else:
-        print("DFU was not accepted by the current firmware.")
-
-    pause()
+        print("DFU 命令未被当前固件接受。")
 
 
-def main_menu(client: MagicConfigClient, args: argparse.Namespace) -> None:
+def cmd_raw(client: MagicConfigClient, argv: list[str]) -> None:
+    if not argv or argv[0].lower() in ("help", "-h", "--help"):
+        print_raw_help()
+        return
+    if len(argv) < 3:
+        command_error("raw 需要参数: <module> <command> <param> [payload bytes...]", "raw")
+        return
+
+    try:
+        module = parse_module(argv[0])
+        command = parse_command(argv[1])
+        param = parse_u8(argv[2])
+        payload = bytes(parse_u8(item) for item in argv[3:])
+    except ValueError as exc:
+        command_error(str(exc), "raw")
+        return
+
+    safe_request(client, module, command, param, payload)
+
+
+def connect_to_port(port: str, baudrate: int, timeout: float) -> MagicConfigClient:
+    client = MagicConfigClient(port, baudrate, timeout)
+    print(f"已连接: {port}")
+    return client
+
+
+def resolve_port_selection(selection: str, ports: list[str]) -> str:
+    if selection.isdigit():
+        index = int(selection)
+        if 1 <= index <= len(ports):
+            return ports[index - 1]
+        raise ValueError("串口编号超出范围。")
+
+    if not selection:
+        raise ValueError("缺少串口编号或名称。")
+
+    return selection
+
+
+def command_loop(client: MagicConfigClient, args: argparse.Namespace) -> None:
+    print("\n已进入配置命令层。输入 help 查看命令，输入 exit 断开并返回串口连接层。")
+
     while True:
-        print("\nMaimai Controller Config")
-        print(f"  Port: {client.port}")
-        print("  1. Light config")
-        print("  2. Keyboard config")
-        print("  3. Raw magic request")
-        print("  4. Enter DFU")
-        print("  5. Reconnect")
-        print("  6. List serial ports")
-        print("  0. Exit")
-
-        choice = ask("Choice", "1")
-        if choice == "0":
+        try:
+            line = input(f"tenodx:{client.port}> ").strip()
+        except EOFError:
+            print()
             return
-        if choice == "1":
-            light_menu(client)
-        elif choice == "2":
-            keyboard_menu(client)
-        elif choice == "3":
-            raw_menu(client)
-        elif choice == "4":
-            dfu_menu(client)
-        elif choice == "5":
-            client.close()
-            client = connect(None, args.baudrate, args.timeout)
-        elif choice == "6":
-            try:
-                list_serial_ports()
-            except Exception as exc:
-                print(f"Error: {exc}")
-            pause()
+
+        if not line:
+            continue
+
+        try:
+            parts = shlex.split(line)
+        except ValueError as exc:
+            print(f"命令解析失败: {exc}")
+            continue
+
+        if not parts:
+            continue
+
+        root = parts[0].lower()
+        argv = parts[1:]
+
+        if root in ("exit", "quit"):
+            return
+
+        if root == "help":
+            print_help(argv[0] if argv else None)
+            continue
+
+        if root == "led":
+            cmd_led(client, argv)
+        elif root == "keyboard":
+            cmd_keyboard(client, argv)
+        elif root == "touch":
+            cmd_touch(argv)
+        elif root in ("aime", "reader"):
+            cmd_aime(argv)
+        elif root == "dfu":
+            cmd_dfu(client, argv)
+        elif root == "raw":
+            cmd_raw(client, argv)
         else:
-            print("Unknown choice.")
+            print(f"未知命令类型: {parts[0]}")
+            print("输入 help 查看可用命令。")
+
+
+def connection_loop(args: argparse.Namespace) -> None:
+    print("TenoDX 配置工具")
+    print("当前位于串口连接层。输入 help 查看命令。")
+    ports = list_serial_ports()
+
+    if args.port:
+        print(f"\n默认串口: {args.port}")
+        print("输入 connect 直接连接默认串口，或输入其他编号/COM 名称。")
+
+    while True:
+        try:
+            line = input("tenodx:connect> ").strip()
+        except EOFError:
+            print()
+            return
+
+        if not line:
+            continue
+
+        try:
+            parts = shlex.split(line)
+        except ValueError as exc:
+            print(f"命令解析失败: {exc}")
+            continue
+
+        if not parts:
+            continue
+
+        root = parts[0].lower()
+        argv = parts[1:]
+
+        if root in ("exit", "quit"):
+            return
+
+        if root in ("help", "-h", "--help"):
+            print_connection_help()
+            continue
+
+        if root in ("ports", "list", "refresh"):
+            ports = list_serial_ports()
+            continue
+
+        if root == "connect":
+            selection = argv[0] if argv else (args.port or "")
+        elif len(parts) == 1:
+            selection = parts[0]
+        else:
+            print(f"未知串口连接层命令: {parts[0]}")
+            print("输入 help 查看用法。")
+            continue
+
+        try:
+            port = resolve_port_selection(selection, ports)
+            client = connect_to_port(port, args.baudrate, args.timeout)
+        except Exception as exc:
+            print(f"连接失败: {exc}")
+            continue
+
+        try:
+            command_loop(client, args)
+        finally:
+            client.close()
+            print(f"已断开: {port}")
+
+        ports = list_serial_ports()
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Interactive magic-config console.")
-    parser.add_argument("-p", "--port", help="serial port of light CDC, for example COM7")
-    parser.add_argument("--baudrate", type=int, default=115200, help="CDC baudrate placeholder, default 115200")
-    parser.add_argument("--timeout", type=float, default=1.0, help="serial timeout seconds, default 1.0")
+    parser = argparse.ArgumentParser(description="TenoDX command-style magic-config console.")
+    parser.add_argument("-p", "--port", help="默认串口，例如 COM7；启动时仍会列出串口")
+    parser.add_argument("--baudrate", type=int, default=115200, help="CDC 波特率占位，默认 115200")
+    parser.add_argument("--timeout", type=float, default=1.0, help="串口响应超时时间，单位秒，默认 1.0")
     return parser
 
 
@@ -589,20 +920,15 @@ def main(argv: list[str] | None = None) -> int:
         print("pyserial is not installed. Run: python -m pip install pyserial", file=sys.stderr)
         return 1
 
-    client = None
     try:
-        client = connect(args.port, args.baudrate, args.timeout)
-        main_menu(client, args)
+        connection_loop(args)
         return 0
     except KeyboardInterrupt:
-        print("\nBye.")
+        print("\n已退出。")
         return 0
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    finally:
-        if client is not None:
-            client.close()
 
 
 if __name__ == "__main__":

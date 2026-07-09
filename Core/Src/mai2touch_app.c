@@ -11,6 +11,8 @@
 #define MAI2TOUCH_DEVICE_PAYLOAD_LENGTH    34U
 #define MAI2TOUCH_CDC_FRAME_LENGTH         70U
 #define MAI2TOUCH_CDC_PERIOD_MS            5U
+#define MAI2TOUCH_DETECT_PERIOD_MS         250U
+#define MAI2TOUCH_DETECT_TIMEOUT_MS        2U
 
 // 新增：适配上位机 34 通道下发的长度定义
 #define MAI2TOUCH_HOST_RX_FRAME_LENGTH     139U
@@ -42,12 +44,23 @@ static uint8_t cdc_tx_frame[MAI2TOUCH_CDC_FRAME_LENGTH];
 // 扩大缓冲区以容纳 34 通道的配置数据 (34*4 = 136 字节)
 static uint8_t host_config_payload[MAI2TOUCH_HOST_CONFIG_LENGTH];
 static uint32_t next_cdc_tick;
+static uint32_t next_detect_tick;
 static uint8_t active_device = 0;
+static uint8_t detect_device = 0;
 static volatile bool i2c_transfer_complete = false;
 static volatile bool i2c_transfer_error = false;
 
 static bool tick_due(uint32_t now, uint32_t due) {
     return (int32_t)(now - due) >= 0;
+}
+
+static bool any_device_connected(void) {
+    for (uint8_t i = 0; i < MAI2TOUCH_DEVICE_COUNT; i++) {
+        if (devices[i].connected) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void mai2touch_app_init(void) {
@@ -59,6 +72,11 @@ void mai2touch_app_init(void) {
 
     app_state = APP_STATE_INIT_WAIT;
     next_cdc_tick = now;
+    next_detect_tick = now;
+    active_device = 0;
+    detect_device = 0;
+    i2c_transfer_complete = false;
+    i2c_transfer_error = false;
 }
 
 // 采用 Peek 预查法的安全流式解析，彻底解决缓冲溢出与数据错位
@@ -88,7 +106,7 @@ static void process_cdc_rx(void) {
             }
 
             // 如果校验和正确，把 136 字节的配置载荷扣出来
-            if (sum == rx_buf[MAI2TOUCH_HOST_RX_FRAME_LENGTH - 1]) {
+            if (sum == rx_buf[MAI2TOUCH_HOST_RX_FRAME_LENGTH - 1] && any_device_connected()) {
                 memcpy(host_config_payload, &rx_buf[2], MAI2TOUCH_HOST_CONFIG_LENGTH);
                 app_state = APP_STATE_WRITE_CONFIG_TO_PSOC;
             }
@@ -106,20 +124,21 @@ void mai2touch_app_task(void) {
     switch (app_state) {
         case APP_STATE_INIT_WAIT:
         {
-            // 防跳过保护：必须有至少 1 颗 PSoC 回应，才进入下一阶段
-            bool any_found = false;
-            for(int i = 0; i < MAI2TOUCH_DEVICE_COUNT; i++) {
-                if (HAL_I2C_IsDeviceReady(&hi2c1, devices[i].address << 1, 3, 10) == HAL_OK) {
-                    devices[i].connected = true;
-                    any_found = true;
-                } else {
-                    devices[i].connected = false;
-                }
+            if (!tick_due(now, next_detect_tick)) {
+                break;
             }
-            if (any_found) {
+
+            next_detect_tick = now + MAI2TOUCH_DETECT_PERIOD_MS;
+
+            if (HAL_I2C_IsDeviceReady(&hi2c1,
+                                      devices[detect_device].address << 1,
+                                      1,
+                                      MAI2TOUCH_DETECT_TIMEOUT_MS) == HAL_OK) {
+                devices[detect_device].connected = true;
                 app_state = APP_STATE_WAIT_HOST_CONFIG;
             } else {
-                HAL_Delay(50); // 若都没准备好，略微延时等待硬件复位完成
+                devices[detect_device].connected = false;
+                detect_device = (uint8_t)((detect_device + 1U) % MAI2TOUCH_DEVICE_COUNT);
             }
             break;
         }
