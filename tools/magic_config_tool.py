@@ -7,6 +7,7 @@ import argparse
 import dataclasses
 import shlex
 import sys
+import threading
 import time
 
 try:
@@ -54,6 +55,8 @@ STATUS_TEXT = {
 
 LIGHT_PARAM_LED_PER_BIT = 0x01
 LIGHT_PARAM_RAINBOW_ENABLE = 0x02
+LIGHT_INFO_PARAMS = bytes([LIGHT_PARAM_LED_PER_BIT, LIGHT_PARAM_RAINBOW_ENABLE])
+CONNECTION_CHECK_INTERVAL_SECONDS = 1.0
 
 GLOBAL_MODULE = 0x00
 GLOBAL_PARAM_ALL = 0x00
@@ -153,6 +156,7 @@ class MagicConfigClient:
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
+        self._io_lock = threading.Lock()
         self.serial = serial.Serial(
             port=port,
             baudrate=baudrate,
@@ -161,8 +165,9 @@ class MagicConfigClient:
         )
 
     def close(self) -> None:
-        if self.serial.is_open:
-            self.serial.close()
+        with self._io_lock:
+            if self.serial.is_open:
+                self.serial.close()
 
     def request(self, module: int, command: int, param: int = 0, payload: bytes = b"") -> MagicResponse:
         if len(payload) > MAX_PAYLOAD:
@@ -172,18 +177,22 @@ class MagicConfigClient:
         checksum = (sum(header) + sum(payload)) & 0xFF
         frame = MAGIC_SEQUENCE + header + payload + bytes([checksum])
 
-        self.serial.reset_input_buffer()
-        self.serial.write(frame)
-        self.serial.flush()
+        with self._io_lock:
+            if not self.serial.is_open:
+                raise ConnectionError(f"serial port is closed: {self.port}")
 
-        response = self.read_response()
-        if response.module != (module & 0xFF) or response.command != (command & 0xFF):
-            raise RuntimeError(
-                "response mismatch: "
-                f"got module=0x{response.module:02X} cmd=0x{response.command:02X}"
-            )
+            self.serial.reset_input_buffer()
+            self.serial.write(frame)
+            self.serial.flush()
 
-        return response
+            response = self.read_response()
+            if response.module != (module & 0xFF) or response.command != (command & 0xFF):
+                raise RuntimeError(
+                    "response mismatch: "
+                    f"got module=0x{response.module:02X} cmd=0x{response.command:02X}"
+                )
+
+            return response
 
     def read_exact(self, length: int) -> bytes:
         deadline = time.monotonic() + self.timeout
@@ -772,8 +781,69 @@ def cmd_raw(client: MagicConfigClient, argv: list[str]) -> None:
 
 def connect_to_port(port: str, baudrate: int, timeout: float) -> MagicConfigClient:
     client = MagicConfigClient(port, baudrate, timeout)
-    print(f"已连接: {port}")
+    try:
+        verify_magic_port(client)
+    except Exception:
+        client.close()
+        raise
+
+    print(f"已连接并验证为 TenoDX 灯光配置端口: {port}")
     return client
+
+
+def verify_magic_port(client: MagicConfigClient) -> None:
+    """Verify that an open serial port is the firmware's CDC1 Magic endpoint."""
+    response = client.request(MODULES["light"], COMMANDS["info"])
+
+    if not response.ok:
+        raise RuntimeError(
+            "端口响应了 Magic 协议，但灯光模块未就绪："
+            f"{response_line(response)}"
+        )
+
+    if not set(LIGHT_INFO_PARAMS).issubset(response.payload):
+        raise RuntimeError(
+            "端口响应了 Magic 协议，但不是兼容的 TenoDX 灯光配置端口："
+            f"{response_line(response)}"
+        )
+
+
+class ConnectionMonitor:
+    """Periodically verify that an already connected CDC1/Magic port is still alive."""
+
+    def __init__(self, client: MagicConfigClient, interval_seconds: float) -> None:
+        self.client = client
+        self.interval_seconds = interval_seconds
+        self._stop_event = threading.Event()
+        self._disconnected_event = threading.Event()
+        self._error: str | None = None
+        self._thread = threading.Thread(target=self._run, name="tenodx-connection-monitor", daemon=True)
+
+    @property
+    def disconnected(self) -> bool:
+        return self._disconnected_event.is_set()
+
+    @property
+    def error(self) -> str:
+        return self._error or "连接已断开。"
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._thread.join(timeout=self.client.timeout + self.interval_seconds)
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self.interval_seconds):
+            try:
+                verify_magic_port(self.client)
+            except Exception as exc:
+                self._error = str(exc)
+                self._disconnected_event.set()
+                self.client.close()
+                print(f"\n连接已断开：{self._error}\n按 Enter 返回串口连接层。")
+                return
 
 
 def resolve_port_selection(selection: str, ports: list[str]) -> str:
@@ -790,13 +860,20 @@ def resolve_port_selection(selection: str, ports: list[str]) -> str:
 
 
 def command_loop(client: MagicConfigClient, args: argparse.Namespace) -> None:
+    monitor = ConnectionMonitor(client, CONNECTION_CHECK_INTERVAL_SECONDS)
+    monitor.start()
     print("\n已进入配置命令层。输入 help 查看命令，输入 exit 断开并返回串口连接层。")
 
-    while True:
+    while not monitor.disconnected:
         try:
             line = input(f"tenodx:{client.port}> ").strip()
         except EOFError:
             print()
+            monitor.stop()
+            return
+
+        if monitor.disconnected:
+            monitor.stop()
             return
 
         if not line:
@@ -815,6 +892,7 @@ def command_loop(client: MagicConfigClient, args: argparse.Namespace) -> None:
         argv = parts[1:]
 
         if root in ("exit", "quit"):
+            monitor.stop()
             return
 
         if root == "help":
@@ -836,6 +914,8 @@ def command_loop(client: MagicConfigClient, args: argparse.Namespace) -> None:
         else:
             print(f"未知命令类型: {parts[0]}")
             print("输入 help 查看可用命令。")
+
+    monitor.stop()
 
 
 def connection_loop(args: argparse.Namespace) -> None:
