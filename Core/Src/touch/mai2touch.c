@@ -31,11 +31,9 @@ static uint8_t rx_len = 0;
 // ================= 公开 API =================
 
 void mai2touch_init(void) {
-    // 默认不上报触摸数据，收到 {STAT} 后才开始发送
-    // 测试：只触发 A1(bit0) 和 B5(bit12)
-    // Mai2Touch 协议使用游戏内部编号: A1~A8=bit0~7, B1~B8=bit8~15, C1~C2=bit16~17, D1~D8=bit18~25, E1~E8=bit26~33
-    // touch_bits = 0x3FFFFFFFFULL;  // 全部 34 通道按下
-    touch_bits = (1ULL << 0) | (1ULL << 12);  // A1(bit0) + B5(bit12)
+    // 触摸位由 touch_pipeline (ButtonDetector) 更新，此处仅初始化为 0
+    // 收到 {STAT} 后开始周期性发送
+    touch_bits = 0;
     sending = false;
     rx_len = 0;
     next_send_tick = HAL_GetTick();
@@ -48,9 +46,8 @@ uint64_t* mai2touch_get_touch_bits(void) {
 // ================= 命令处理 =================
 
 static void mai2touch_cmd_rset(void) {
-    // 复位：恢复默认测试状态 (A1 + B5)，等待 {STAT}
-    // touch_bits = 0x3FFFFFFFFULL;  // 全部按下
-    touch_bits = (1ULL << 0) | (1ULL << 12);  // A1(bit0) + B5(bit12)
+    // 复位：清除触摸位，等待 {STAT}
+    touch_bits = 0;
     sending = false;
 }
 

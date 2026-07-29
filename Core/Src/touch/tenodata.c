@@ -2,6 +2,7 @@
 #include "tenodata_config.h"
 #include "psoc_comm.h"
 #include "cdc_manager.h"
+#include "touch_pipeline.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -66,6 +67,7 @@ void tenodata_init(void) {
 
     // 初始化子模块
     psoc_comm_init();
+    touch_pipeline_init();
 
     // 从本地配置生成 136 字节硬件参数载荷 (无需等待上位机下发)
     tenodata_config_get_payload(host_config_payload);
@@ -81,11 +83,13 @@ void tenodata_task(void) {
     switch (state) {
 
         case STATE_INIT_WAIT: {
-            if (psoc_comm_probe() > 0) {
-                // 直接使用本地配置，跳过等待上位机下发
-                state = STATE_WRITE_CONFIG_TO_PSOC;
-            } else {
-                HAL_Delay(50);
+            // 每隔 50ms 探测一次 PSoC, 不阻塞主循环 (USB 回调不受影响)
+            static uint32_t last_probe_time = 0;
+            if (now - last_probe_time >= 50) {
+                last_probe_time = now;
+                if (psoc_comm_probe() > 0) {
+                    state = STATE_WRITE_CONFIG_TO_PSOC;
+                }
             }
             break;
         }
@@ -135,6 +139,14 @@ void tenodata_task(void) {
             if (psoc_comm_is_read_complete() || psoc_comm_is_read_error()) {
                 if (psoc_comm_is_read_complete()) {
                     psoc_comm_commit_read(active_device);
+
+                    // mai2touch 活跃 → 数据进判定管线; 否则由 CDC 推流处理
+                    if (cdc_manager_is_mai2touch_active()) {
+                        const PsocDevice *dev = psoc_comm_get_device(active_device);
+                        if (dev && dev->connected) {
+                            touch_pipeline_feed(active_device, dev->raw);
+                        }
+                    }
 
                     // 自愈：PSoC 崩溃则退回重配
                     const PsocDevice *dev = psoc_comm_get_device(active_device);
