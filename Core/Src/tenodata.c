@@ -1,20 +1,20 @@
-#include "mai2touch_app.h"
+#include "tenodata.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 #include "i2c.h"
 #include "tusb.h"
 
-#define MAI2TOUCH_CDC_ITF                  0U
-#define MAI2TOUCH_DEVICE_COUNT             2U
-#define MAI2TOUCH_I2C_DATA_LENGTH          35U
-#define MAI2TOUCH_DEVICE_PAYLOAD_LENGTH    34U
-#define MAI2TOUCH_CDC_FRAME_LENGTH         70U
-#define MAI2TOUCH_CDC_PERIOD_MS            5U
+#define TENODATA_CDC_ITF                  0U
+#define TENODATA_DEVICE_COUNT             2U
+#define TENODATA_I2C_DATA_LENGTH          35U
+#define TENODATA_DEVICE_PAYLOAD_LENGTH    34U
+#define TENODATA_CDC_FRAME_LENGTH         70U
+#define TENODATA_CDC_PERIOD_MS            5U
 
 // 新增：适配上位机 34 通道下发的长度定义
-#define MAI2TOUCH_HOST_RX_FRAME_LENGTH     139U
-#define MAI2TOUCH_HOST_CONFIG_LENGTH       136U
+#define TENODATA_HOST_RX_FRAME_LENGTH     139U
+#define TENODATA_HOST_CONFIG_LENGTH       136U
 
 // EZI2C 内存映射偏移
 #define EZI2C_OFFSET_STATUS                0U
@@ -27,20 +27,20 @@ typedef enum {
     APP_STATE_WRITE_CONFIG_TO_PSOC,
     APP_STATE_WAIT_CALIBRATION,
     APP_STATE_RUNNING
-} mai2touch_app_state_t;
+} tenodata_state_t;
 
 typedef struct {
     uint8_t address;
-    uint8_t raw[MAI2TOUCH_I2C_DATA_LENGTH];
-    uint8_t rx_raw[MAI2TOUCH_I2C_DATA_LENGTH];
+    uint8_t raw[TENODATA_I2C_DATA_LENGTH];
+    uint8_t rx_raw[TENODATA_I2C_DATA_LENGTH];
     bool connected;
-} mai2touch_device_t;
+} tenodata_device_t;
 
-static mai2touch_device_t devices[MAI2TOUCH_DEVICE_COUNT];
-static mai2touch_app_state_t app_state;
-static uint8_t cdc_tx_frame[MAI2TOUCH_CDC_FRAME_LENGTH];
+static tenodata_device_t devices[TENODATA_DEVICE_COUNT];
+static tenodata_state_t app_state;
+static uint8_t cdc_tx_frame[TENODATA_CDC_FRAME_LENGTH];
 // 扩大缓冲区以容纳 34 通道的配置数据 (34*4 = 136 字节)
-static uint8_t host_config_payload[MAI2TOUCH_HOST_CONFIG_LENGTH];
+static uint8_t host_config_payload[TENODATA_HOST_CONFIG_LENGTH];
 static uint32_t next_cdc_tick;
 static uint8_t active_device = 0;
 static volatile bool i2c_transfer_complete = false;
@@ -50,7 +50,7 @@ static bool tick_due(uint32_t now, uint32_t due) {
     return (int32_t)(now - due) >= 0;
 }
 
-void mai2touch_app_init(void) {
+void tenodata_init(void) {
     uint32_t now = HAL_GetTick();
     memset(devices, 0, sizeof(devices));
 
@@ -64,39 +64,39 @@ void mai2touch_app_init(void) {
 // 采用 Peek 预查法的安全流式解析，彻底解决缓冲溢出与数据错位
 static void process_cdc_rx(void) {
     // 缓冲区加大到 139 字节
-    uint8_t rx_buf[MAI2TOUCH_HOST_RX_FRAME_LENGTH];
+    uint8_t rx_buf[TENODATA_HOST_RX_FRAME_LENGTH];
 
     // 只要缓冲池里存在 >= 139 字节，就一直尝试提取完整的配置包
-    while (tud_cdc_n_available(MAI2TOUCH_CDC_ITF) >= MAI2TOUCH_HOST_RX_FRAME_LENGTH) {
+    while (tud_cdc_n_available(TENODATA_CDC_ITF) >= TENODATA_HOST_RX_FRAME_LENGTH) {
         uint8_t header;
-        tud_cdc_n_peek(MAI2TOUCH_CDC_ITF, &header);
+        tud_cdc_n_peek(TENODATA_CDC_ITF, &header);
 
         // 找帧头，如果不是 0xAA 就扔掉这 1 个坏字节，继续下一轮 while
         if (header != 0xAA) {
-            tud_cdc_n_read(MAI2TOUCH_CDC_ITF, &header, 1);
+            tud_cdc_n_read(TENODATA_CDC_ITF, &header, 1);
             continue;
         }
 
         // 到这里说明对齐了帧头，放心读出 139 字节
-        tud_cdc_n_read(MAI2TOUCH_CDC_ITF, rx_buf, MAI2TOUCH_HOST_RX_FRAME_LENGTH);
+        tud_cdc_n_read(TENODATA_CDC_ITF, rx_buf, TENODATA_HOST_RX_FRAME_LENGTH);
 
         // 校验指令码和 Checksum
         if (rx_buf[1] == 0x01) {
             uint8_t sum = 0;
-            for (int i = 0; i < MAI2TOUCH_HOST_RX_FRAME_LENGTH - 1; i++) {
+            for (int i = 0; i < TENODATA_HOST_RX_FRAME_LENGTH - 1; i++) {
                 sum += rx_buf[i];
             }
 
             // 如果校验和正确，把 136 字节的配置载荷扣出来
-            if (sum == rx_buf[MAI2TOUCH_HOST_RX_FRAME_LENGTH - 1]) {
-                memcpy(host_config_payload, &rx_buf[2], MAI2TOUCH_HOST_CONFIG_LENGTH);
+            if (sum == rx_buf[TENODATA_HOST_RX_FRAME_LENGTH - 1]) {
+                memcpy(host_config_payload, &rx_buf[2], TENODATA_HOST_CONFIG_LENGTH);
                 app_state = APP_STATE_WRITE_CONFIG_TO_PSOC;
             }
         }
     }
 }
 
-void mai2touch_app_task(void) {
+void tenodata_task(void) {
     uint32_t now = HAL_GetTick();
 
     // 1. 监控上位机配置下发
@@ -108,7 +108,7 @@ void mai2touch_app_task(void) {
         {
             // 防跳过保护：必须有至少 1 颗 PSoC 回应，才进入下一阶段
             bool any_found = false;
-            for(int i = 0; i < MAI2TOUCH_DEVICE_COUNT; i++) {
+            for(int i = 0; i < TENODATA_DEVICE_COUNT; i++) {
                 if (HAL_I2C_IsDeviceReady(&hi2c1, devices[i].address << 1, 3, 10) == HAL_OK) {
                     devices[i].connected = true;
                     any_found = true;
@@ -132,7 +132,7 @@ void mai2touch_app_task(void) {
         {
             uint8_t psoc_cfg[68];
 
-            for(int i = 0; i < MAI2TOUCH_DEVICE_COUNT; i++) {
+            for(int i = 0; i < TENODATA_DEVICE_COUNT; i++) {
                 if(devices[i].connected) {
                     // ==============================================================
                     // 【关键修复：数据拆包与路由】
@@ -170,7 +170,7 @@ void mai2touch_app_task(void) {
                 last_calib_check = now;
                 bool all_calibrated = true;
 
-                for(int i = 0; i < MAI2TOUCH_DEVICE_COUNT; i++) {
+                for(int i = 0; i < TENODATA_DEVICE_COUNT; i++) {
                     if(devices[i].connected) {
                         uint8_t psoc_status = 0xFF;
                         if(HAL_I2C_Mem_Read(&hi2c1, devices[i].address << 1, EZI2C_OFFSET_STATUS, I2C_MEMADD_SIZE_8BIT, &psoc_status, 1, 10) == HAL_OK) {
@@ -203,7 +203,7 @@ void mai2touch_app_task(void) {
                 // 1. 处理上一次接收的结果
                 if (i2c_transfer_complete || i2c_transfer_error) {
                     if (i2c_transfer_complete) {
-                        memcpy(devices[active_device].raw, devices[active_device].rx_raw, MAI2TOUCH_I2C_DATA_LENGTH);
+                        memcpy(devices[active_device].raw, devices[active_device].rx_raw, TENODATA_I2C_DATA_LENGTH);
 
                         // 依然保留神级自愈机制
                         if (devices[active_device].raw[0] == 0x00) {
@@ -213,7 +213,7 @@ void mai2touch_app_task(void) {
                     }
                     i2c_transfer_complete = false;
                     i2c_transfer_error = false;
-                    active_device = (active_device + 1) % MAI2TOUCH_DEVICE_COUNT;
+                    active_device = (active_device + 1) % TENODATA_DEVICE_COUNT;
                 }
 
                 // 2. 每隔 8ms 发起下一次通讯 (防 DDOS)
@@ -223,12 +223,12 @@ void mai2touch_app_task(void) {
                     if (devices[active_device].connected) {
 
                         // 改用 Mem_Read_IT，一次性安全完成指针跳转与数据读取
-                        if(HAL_I2C_Mem_Read_IT(&hi2c1, devices[active_device].address << 1, 0x00, I2C_MEMADD_SIZE_8BIT, devices[active_device].rx_raw, MAI2TOUCH_I2C_DATA_LENGTH) != HAL_OK) {
+                        if(HAL_I2C_Mem_Read_IT(&hi2c1, devices[active_device].address << 1, 0x00, I2C_MEMADD_SIZE_8BIT, devices[active_device].rx_raw, TENODATA_I2C_DATA_LENGTH) != HAL_OK) {
                             i2c_transfer_error = true;
                         }
 
                     } else {
-                        active_device = (active_device + 1) % MAI2TOUCH_DEVICE_COUNT;
+                        active_device = (active_device + 1) % TENODATA_DEVICE_COUNT;
                     }
                 }
             }
@@ -237,8 +237,8 @@ void mai2touch_app_task(void) {
 
     // 3. CDC 60Hz 定时推流
     if (tick_due(now, next_cdc_tick)) {
-        next_cdc_tick = now + MAI2TOUCH_CDC_PERIOD_MS;
-        memset(cdc_tx_frame, 0, MAI2TOUCH_CDC_FRAME_LENGTH);
+        next_cdc_tick = now + TENODATA_CDC_PERIOD_MS;
+        memset(cdc_tx_frame, 0, TENODATA_CDC_FRAME_LENGTH);
 
         if (app_state == APP_STATE_WAIT_HOST_CONFIG) {
             cdc_tx_frame[0] = 0x01;
@@ -249,24 +249,24 @@ void mai2touch_app_task(void) {
             cdc_tx_frame[0] = devices[0].raw[0];
         } else {
             cdc_tx_frame[0] = 0x00;
-            for (int i = 0; i < MAI2TOUCH_DEVICE_COUNT; i++) {
+            for (int i = 0; i < TENODATA_DEVICE_COUNT; i++) {
                 if (devices[i].connected) {
-                    memcpy(&cdc_tx_frame[1 + i * MAI2TOUCH_DEVICE_PAYLOAD_LENGTH],
+                    memcpy(&cdc_tx_frame[1 + i * TENODATA_DEVICE_PAYLOAD_LENGTH],
                            &devices[i].raw[1],
-                           MAI2TOUCH_DEVICE_PAYLOAD_LENGTH);
+                           TENODATA_DEVICE_PAYLOAD_LENGTH);
                 }
             }
         }
 
         uint8_t checksum = 0;
-        for (int i = 0; i < MAI2TOUCH_CDC_FRAME_LENGTH - 1; i++) {
+        for (int i = 0; i < TENODATA_CDC_FRAME_LENGTH - 1; i++) {
             checksum += cdc_tx_frame[i];
         }
-        cdc_tx_frame[MAI2TOUCH_CDC_FRAME_LENGTH - 1] = checksum;
+        cdc_tx_frame[TENODATA_CDC_FRAME_LENGTH - 1] = checksum;
 
-        if (tud_cdc_n_ready(MAI2TOUCH_CDC_ITF) && tud_cdc_n_write_available(MAI2TOUCH_CDC_ITF) >= MAI2TOUCH_CDC_FRAME_LENGTH) {
-            if (tud_cdc_n_write(MAI2TOUCH_CDC_ITF, cdc_tx_frame, MAI2TOUCH_CDC_FRAME_LENGTH) == MAI2TOUCH_CDC_FRAME_LENGTH) {
-                tud_cdc_n_write_flush(MAI2TOUCH_CDC_ITF);
+        if (tud_cdc_n_ready(TENODATA_CDC_ITF) && tud_cdc_n_write_available(TENODATA_CDC_ITF) >= TENODATA_CDC_FRAME_LENGTH) {
+            if (tud_cdc_n_write(TENODATA_CDC_ITF, cdc_tx_frame, TENODATA_CDC_FRAME_LENGTH) == TENODATA_CDC_FRAME_LENGTH) {
+                tud_cdc_n_write_flush(TENODATA_CDC_ITF);
             }
         }
     }
