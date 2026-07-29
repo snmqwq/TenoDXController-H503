@@ -1,13 +1,12 @@
 #include "tenodata.h"
 #include "tenodata_config.h"
 #include "psoc_comm.h"
+#include "cdc_manager.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
-#include "tusb.h"
 
 // ================= CDC 通讯常量 =================
-#define TENODATA_CDC_ITF               0U
 #define TENODATA_CDC_FRAME_LENGTH      70U
 #define TENODATA_CDC_PERIOD_MS         5U
 
@@ -56,13 +55,8 @@ static void cdc_send_frame(uint8_t status) {
     }
     cdc_tx_frame[TENODATA_CDC_FRAME_LENGTH - 1] = checksum;
 
-    // 发送
-    if (tud_cdc_n_ready(TENODATA_CDC_ITF) &&
-        tud_cdc_n_write_available(TENODATA_CDC_ITF) >= TENODATA_CDC_FRAME_LENGTH) {
-        if (tud_cdc_n_write(TENODATA_CDC_ITF, cdc_tx_frame, TENODATA_CDC_FRAME_LENGTH) == TENODATA_CDC_FRAME_LENGTH) {
-            tud_cdc_n_write_flush(TENODATA_CDC_ITF);
-        }
-    }
+    // 通过 CDC 管理层发送 (from_mai2touch=false 表示来自 tenodata)
+    cdc_manager_try_send(false, cdc_tx_frame, TENODATA_CDC_FRAME_LENGTH);
 }
 
 // ================= 公开 API =================
