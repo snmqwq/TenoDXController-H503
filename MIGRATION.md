@@ -88,7 +88,8 @@ python tools/magic_config_tool.py
 
 ## 当前触摸测试行为
 
-`Core/Src/mai2touch_app.c` 当前是 raw 数据测试路径，还不是最终触摸算法：
+`Core/Src/touch/mai2touch.c` 当前是 raw 数据测试路径，还不是最终触摸算法。
+为避免影响并行 PR，touch 暂时保留在原目录且不调整现有结构：
 
 - 每个 I2C 设备从寄存器 `0x00` 开始读取 35 字节。
 - 使用 `HAL_I2C_Master_Transmit_IT` 写寄存器地址，再用
@@ -106,7 +107,7 @@ python tools/magic_config_tool.py
 
 ## 当前 Aime/PN532 行为
 
-`Core/Src/aime_reader_app.c`：
+`App/aime/aime_reader_app.c`：
 
 - PN532 使用 USART2 中断和 Receive-to-IDLE 环形缓冲。
 - 支持 FeliCa IDm 和 MIFARE Block 2 读取路径。

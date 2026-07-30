@@ -4,7 +4,7 @@
 #include <string.h>
 
 #include "magic_config.h"
-#include "mai2led_app.h"
+#include "led/mai2led_app.h"
 
 #define LIGHT_PARAM_LED_PER_BIT       0x01U
 #define LIGHT_PARAM_RAINBOW_ENABLE    0x02U

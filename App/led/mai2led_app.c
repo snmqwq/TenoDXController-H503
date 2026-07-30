@@ -1,6 +1,6 @@
 #include "mai2led_app.h"
 
-#include "flash_config.h"
+#include "config/flash_config.h"
 #include "main.h"
 #include "mai2led.h"
 #include "tusb.h"

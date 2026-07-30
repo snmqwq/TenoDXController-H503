@@ -1,9 +1,9 @@
 #include "keyboard_app.h"
 
-#include "flash_config.h"
-#include "magic_config.h"
+#include "config/flash_config.h"
+#include "config/magic_config.h"
 #include "main.h"
-#include "multi_button.h"
+#include "button/multi_button.h"
 #include "tusb.h"
 #include <string.h>
 

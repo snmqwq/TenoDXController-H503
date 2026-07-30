@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "magic_config.h"
+#include "config/magic_config.h"
 #include "tusb.h"
 #include "usart.h"
 

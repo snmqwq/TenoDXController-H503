@@ -52,7 +52,7 @@ https://github.com/snmqwq/TenoDXController-H503
   处理后输出尚需继续完善。
 
 当前 Aime/PN532 状态：
-- Core/Src/aime_reader_app.c 已实现 PN532 状态机及 Aime 主机协议。
+- App/aime/aime_reader_app.c 已实现 PN532 状态机及 Aime 主机协议。
 - PN532 使用 USART2 中断和 Receive-to-IDLE 环形缓冲。
 - 支持 FeliCa IDm 和 MIFARE Block 2 路径。
 - Aime 主机协议和 Magic 配置协议走 CDC2，由非阻塞分流器区分。

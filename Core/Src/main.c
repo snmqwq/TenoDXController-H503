@@ -27,16 +27,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "tusb.h"
-#include "aime_reader_app.h"
-#include "keyboard_app.h"
-#include "magic_config.h"
-#include "magic_config_light.h"
-#include "mai2led_app.h"
-#include "tenodata.h"
-#include "cdc_manager.h"
-#include "mai2touch.h"
-#include "ws28xx.h"
+#include "app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -67,50 +58,6 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-WS28XX_HandleTypeDef hws;
-
-bool WS28XX_SetPixels_RGB(WS28XX_HandleTypeDef *hLed,
-        uint16_t StartPixel,
-        uint16_t EndPixel,
-        uint8_t Red,
-        uint8_t Green,
-        uint8_t Blue)
-{
-	bool answer = true;
-
-	do
-	{
-		if (hLed == NULL)
-		{
-			answer = false;
-			break;
-		}
-
-		if (StartPixel > EndPixel)
-		{
-			answer = false;
-			break;
-		}
-
-		if (EndPixel >= hLed->MaxPixel)
-		{
-			answer = false;
-			break;
-		}
-
-		for (uint16_t pixel = StartPixel; pixel <= EndPixel; pixel++)
-		{
-			if (WS28XX_SetPixel_RGB(hLed, pixel, Red, Green, Blue) == false)
-			{
-				answer = false;
-				break;
-			}
-		}
-	}
-	while (0);
-
-	return answer;
-}
 
 /* USER CODE END 0 */
 
@@ -150,28 +97,7 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-    WS28XX_Init(&hws, &htim3, 250, TIM_CHANNEL_3, MAI2LED_APP_MAX_LED_TOTAL);
-
-    if (hws.MaxPixel > 0U)
-    {
-        WS28XX_SetPixels_RGB(&hws, 0, hws.MaxPixel - 1U, 0, 0, 0);
-        WS28XX_Update(&hws);
-    }
-
-	tusb_init();
-    cdc_manager_init();
-    aime_reader_app_init();
-    tenodata_init();
-    mai2touch_init();
-    magic_config_init();
-    keyboard_app_init(mai2led_app_restore_idle_lights);
-	mai2led_app_init(&(mai2led_app_config_t)
-    {
-        .led = &hws,
-        .led_per_bit = MAI2LED_APP_DEFAULT_LED_PER_BIT,
-        .button_read = keyboard_app_button_read_mask8
-    });
-    (void)magic_config_light_register();
+  app_init();
 
   /* USER CODE END 2 */
 
@@ -179,13 +105,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
 	while (1)
 	{
-		tud_task();
-        aime_reader_app_task();
-        tenodata_task();
-        mai2touch_task();
-		keyboard_app_poll();
-		mai2led_app_task();
-        magic_config_task();
+    app_task();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -252,13 +172,6 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_TIM_PWM_PulseFinishedCallback(TIM_HandleTypeDef *htim)
-{
-    if(htim->Instance == TIM3)
-    {
-        HAL_TIM_PWM_Stop_DMA(htim, TIM_CHANNEL_3);
-    }
-}
 
 /* USER CODE END 4 */
 

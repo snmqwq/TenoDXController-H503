@@ -165,7 +165,13 @@ python tools/magic_config_tool.py
 
 | 路径 | 内容 |
 | --- | --- |
-| `Core/` | 应用、外设初始化和中断代码 |
+| `App/` | 应用模块及统一的 `app_init()` / `app_task()` 入口 |
+| `App/aime/` | PN532 通信、Aime 协议和 Magic 协议识别 |
+| `App/config/` | Magic 命令及 touch、led、kb 的配置管理 |
+| `App/led/` | Mai2LED 控制 |
+| `App/button/` | 第三方按键库封装 |
+| `App/kb/` | USB 键盘功能 |
+| `Core/` | CubeMX 生成的外设初始化、中断代码，以及暂时保留原位置的 touch 模块 |
 | `Drivers/` | STM32 HAL 与 CMSIS |
 | `tinyusb/` | TinyUSB 协议栈 |
 | `Middlewares/` | WS28XX 驱动 |
@@ -175,6 +181,8 @@ python tools/magic_config_tool.py
 | `ref/Mai2Touch/` | Mai2Touch 协议和参考实现 |
 | `ref/Touch_Algorithm/` | PSoC 数据格式、通道映射和触摸算法参考 |
 | `MIGRATION.md` | 分支历史、迁移说明和开发约束 |
+
+为避免影响并行 PR，touch 当前仍保留在 `Core/Src/touch/`，其文件结构和实现不在本次分类中调整。
 
 ## 许可证
 
