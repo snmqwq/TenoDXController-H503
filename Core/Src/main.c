@@ -32,7 +32,9 @@
 #include "keyboard_app.h"
 #include "magic_config.h"
 #include "mai2led_app.h"
-#include "mai2touch_app.h"
+#include "tenodata.h"
+#include "cdc_manager.h"
+#include "mai2touch.h"
 #include "ws28xx.h"
 /* USER CODE END Includes */
 
@@ -156,8 +158,10 @@ int main(void)
     }
 
 	tusb_init();
+    cdc_manager_init();
     aime_reader_app_init();
-    mai2touch_app_init();
+    tenodata_init();
+    mai2touch_init();
     magic_config_init();
     keyboard_app_init(mai2led_app_restore_idle_lights);
 	mai2led_app_init(&(mai2led_app_config_t)
@@ -175,7 +179,8 @@ int main(void)
 	{
 		tud_task();
         aime_reader_app_task();
-        mai2touch_app_task();
+        tenodata_task();
+        mai2touch_task();
 		keyboard_app_poll();
 		mai2led_app_task();
         magic_config_task();
