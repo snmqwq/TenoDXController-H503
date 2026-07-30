@@ -21,8 +21,8 @@ USB 标识为 VID `0xCAFE`、PID `0x4313`，产品名为 `TenoDX Controller`。
 | 接口 | 名称 | 功能 |
 | --- | --- | --- |
 | CDC0 | TenoDX Touch Port | 双 PSoC raw 触摸数据 |
-| CDC1 | TenoDX LED Port | Mai2LED 灯光协议与 Magic 配置协议 |
-| CDC2 | TenoDX Aime Port | Aime 主机协议 |
+| CDC1 | TenoDX LED Port | Mai2LED 灯光协议 |
+| CDC2 | TenoDX Aime Port | Aime 主机协议与 Magic 配置协议 |
 | HID0 | Keyboard | 11KRO 键盘报告 |
 
 ## 按键
@@ -45,7 +45,7 @@ USB 标识为 VID `0xCAFE`、PID `0x4313`，产品名为 `TenoDX Controller`。
 - 实际灯数为 `8 * LED_PER_BIT`。
 - 默认关闭彩虹模式，上电显示全亮白灯。
 - 彩虹模式下 8 个逻辑按钮具有错开的色相并持续流动，按下按钮时提高亮度并保留少量当前色调。
-- 普通 Mai2LED IO 指令会接管灯光并停止空闲灯效，Magic 配置请求不会触发接管。
+- 普通 Mai2LED IO 指令会接管灯光并停止空闲灯效；Magic 已迁移至 CDC2，不会进入 Mai2LED 协议解析器。
 - 外部 IO 停止后不会定时自动恢复；需要长按 BTN8 恢复。
 - 恢复时，彩虹配置关闭则显示白灯，开启则恢复流动彩虹。
 
@@ -76,14 +76,16 @@ CDC0 固定发送 70 字节：
 - PN532 通过 USART2 通信，接收使用中断和环形缓冲。
 - 支持 FeliCa IDm 读取路径。
 - 支持 MIFARE 验证并读取 Block 2。
-- Aime 主机协议通过 CDC2 收发。
+- Aime 主机协议通过 CDC2 收发，并与 Magic 配置协议共用该接口。
+- CDC2 只在 Aime 帧解析器空闲时检测 Magic 固定前导码；Aime 帧内部不会触发 Magic。
+- Aime 与 Magic 共用非阻塞接收分流和串行发送队列，响应不会交错。
 - USART1 调试由 `PN532_UART_DEBUG_ENABLED` 控制，当前默认值为 `0U`。
 
 原始 Python 桥接程序和移植资料保存在 `ref/Aime/`，仅作为协议参考。
 
 ## Magic 配置协议
 
-Magic 协议与 Mai2LED 共用 CDC1，识别命令为 `0xB7`，固定序列为：
+Magic 协议与 Aime 主机协议共用 CDC2，固定序列为：
 
 ```text
 91 3E ED 20 7C 99 58 AC
@@ -115,6 +117,11 @@ magic_seq + [module, cmd, param, len, payload..., sum]
 
 `WRITE` 只修改 RAM，必须使用 `SAVE` 或 `SAVE_ALL` 才会写入 Flash。
 
+light 模块的 `READ_ALL` / `WRITE_ALL` 载荷版本为 `0x02`，格式为
+`[version, led_per_bit, rainbow_enable]`。Mai2LED 的 8 字节 dummy EEPROM
+不对 Magic 开放，也不写入 light Flash 配置；它只由 CDC1 上的 Mai2LED
+`SetEEPRom 0x7B` 和 `GetEEPRom 0x7C` 命令访问。
+
 ## Flash 配置
 
 链接脚本将内部 128 KiB Flash 的前 120 KiB 分配给固件，最后 8 KiB 用于配置。配置区划分为四个 2 KiB 槽：
@@ -135,7 +142,7 @@ python -m pip install -r tools/requirements.txt
 python tools/magic_config_tool.py
 ```
 
-`magic_config_tool.py` 是交互式命令行工具，支持串口选择、灯光配置、BTN8..BTN10 键值配置、原始 Magic 请求和进入系统 DFU。
+`magic_config_tool.py` 是交互式命令行工具，支持串口选择、灯光配置、BTN8..BTN10 键值配置、原始 Magic 请求和进入系统 DFU。连接时应选择 `TenoDX Aime Port`；配置期间不要让游戏或其他程序同时占用该 COM 口。
 
 ## 构建
 

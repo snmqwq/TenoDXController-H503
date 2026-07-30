@@ -31,6 +31,7 @@
 #include "aime_reader_app.h"
 #include "keyboard_app.h"
 #include "magic_config.h"
+#include "magic_config_light.h"
 #include "mai2led_app.h"
 #include "tenodata.h"
 #include "cdc_manager.h"
@@ -170,6 +171,7 @@ int main(void)
         .led_per_bit = MAI2LED_APP_DEFAULT_LED_PER_BIT,
         .button_read = keyboard_app_button_read_mask8
     });
+    (void)magic_config_light_register();
 
   /* USER CODE END 2 */
 

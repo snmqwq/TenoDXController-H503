@@ -76,8 +76,8 @@ python tools/magic_config_tool.py
 - MCU：STM32H503CBT6。
 - USB：TinyUSB，3 CDC + 1 HID keyboard。
 - CDC0：触摸 raw 数据。
-- CDC1：Mai2LED、灯光和 magic 配置协议。
-- CDC2：Aime 主机协议。
+- CDC1：Mai2LED 灯光协议。
+- CDC2：Aime 主机协议和 magic 配置协议。
 - HID：11KRO keyboard。
 - I2C1：PB7 SDA、PB8 SCL，连接地址 `0x08` 和 `0x09` 的两个 PSoC。
 - USART2：PB4 TX、PB5 RX，115200 8N1，连接 PN532。
@@ -110,7 +110,7 @@ python tools/magic_config_tool.py
 
 - PN532 使用 USART2 中断和 Receive-to-IDLE 环形缓冲。
 - 支持 FeliCa IDm 和 MIFARE Block 2 读取路径。
-- Aime 主机协议通过 CDC2 收发。
+- Aime 主机协议通过 CDC2 收发；magic 配置也迁移到 CDC2，由空闲态前导码分流器识别。
 - PN532 调试宏 `PN532_UART_DEBUG_ENABLED` 当前为 `0U`。
 - 原始 Python 参考和移植手册保存在 `ref/Aime/`。
 
@@ -124,9 +124,11 @@ python tools/magic_config_tool.py
 - 外部普通 Mai2LED IO 接管后，空闲灯效不能覆盖外部灯光。
 - 长按 BTN8/PB0 5 秒恢复空闲灯效，一次长按只触发一次。
 - 默认 rainbow 关闭，上电全亮白灯；清灯为全黑。
-- Magic 配置仍通过 CDC1，`SPECIAL_MAGIC_CMD = 0xB7`。
+- Magic 配置通过 CDC2；Mai2LED 不再检测 Magic 前导码，也不再依赖 `magic_config.h`。
 - Flash 最后 8 KiB 分为 touch/light/reader/keyboard 四个独立 2 KiB 槽。
 - Magic `WRITE` 只改 RAM，`SAVE` 才写 Flash。
+- light `READ_ALL`/`WRITE_ALL` 使用 3 字节 v2 载荷：version、led_per_bit、rainbow。
+- dummy EEPROM 不属于 Magic 或 light Flash 配置，只能由 CDC1 Mai2LED 的 `SetEEPRom`/`GetEEPRom` 访问。
 
 ## 参考资料
 

@@ -3,6 +3,7 @@
 #include "psoc_comm.h"
 #include "cdc_manager.h"
 #include "touch_pipeline.h"
+#include "main.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>

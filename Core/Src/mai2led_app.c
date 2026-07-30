@@ -1,14 +1,10 @@
 #include "mai2led_app.h"
 
 #include "flash_config.h"
-#include "magic_config.h"
 #include "main.h"
 #include "mai2led.h"
 #include "tusb.h"
 #include <string.h>
-
-#define SPECIAL_SEQ_LEN      8U
-#define SPECIAL_MAGIC_CMD    0xB7U
 
 #define IDLE_RAINBOW_UPDATE_MS         20U
 #define IDLE_RAINBOW_STEP              10U
@@ -19,10 +15,8 @@
 #define IDLE_RAINBOW_PRESS_VALUE       255U
 
 #define MAI2LED_FLASH_CONFIG_MAGIC     0x324C414DUL
-#define MAI2LED_FLASH_CONFIG_VERSION   2U
-#define MAI2LED_PARAM_LED_PER_BIT      0x01U
-#define MAI2LED_PARAM_RAINBOW_ENABLE   0x02U
-#define MAI2LED_CONFIG_PAYLOAD_VERSION 1U
+#define MAI2LED_FLASH_CONFIG_VERSION   3U
+#define MAI2LED_DUMMY_EEPROM_SIZE      8U
 
 typedef struct
 {
@@ -38,24 +32,15 @@ typedef struct
     uint8_t led_per_bit;
     uint8_t rainbow_mode_enable;
     uint8_t reserved0;
-    uint8_t dummy_eeprom[8];
-    uint8_t reserved[4];
+    uint8_t reserved[12];
 } mai2led_flash_config_t;
-
-typedef struct
-{
-    uint8_t version;
-    uint8_t led_per_bit;
-    uint8_t rainbow_mode_enable;
-    uint8_t dummy_eeprom[8];
-} mai2led_config_payload_t;
 
 typedef struct
 {
     mai2led_app_config_t config;
     PacketReq req;
     PacketAck ack;
-    uint8_t dummy_eeprom[8];
+    uint8_t dummy_eeprom[MAI2LED_DUMMY_EEPROM_SIZE];
     uint32_t fade_start_time;
     uint32_t fade_end_time;
     uint8_t fade_start_led;
@@ -75,28 +60,6 @@ typedef struct
 } mai2led_app_t;
 
 static mai2led_app_t app;
-
-static const uint8_t special_seq[SPECIAL_SEQ_LEN] =
-{
-    0x91U,
-    0x3eU,
-    0xedU,
-    0x20U,
-    0x7cU,
-    0x99U,
-    0x58U,
-    0xacU
-};
-
-static bool special_sequence_detect(uint8_t r)
-{
-    static uint8_t detector[SPECIAL_SEQ_LEN];
-
-    memmove(&detector[0], &detector[1], SPECIAL_SEQ_LEN - 1U);
-    detector[SPECIAL_SEQ_LEN - 1U] = r;
-
-    return memcmp(detector, special_seq, SPECIAL_SEQ_LEN) == 0;
-}
 
 static bool set_pixels_rgb(WS28XX_HandleTypeDef *led,
                            uint16_t start_pixel,
@@ -146,7 +109,7 @@ static RGB_t rgb_blend(RGB_t c1, RGB_t c2, uint8_t amount)
     return out;
 }
 
-static bool led_per_bit_is_valid(uint8_t led_per_bit)
+bool mai2led_app_is_led_per_bit_valid(uint8_t led_per_bit)
 {
     if (led_per_bit == 0U)
     {
@@ -162,154 +125,6 @@ static bool led_per_bit_is_valid(uint8_t led_per_bit)
     return true;
 }
 
-static bool light_magic_read(uint8_t param,
-                             uint8_t *data,
-                             uint8_t max_length,
-                             uint8_t *out_length)
-{
-    if ((data == NULL) || (out_length == NULL) || (max_length < 1U))
-    {
-        return false;
-    }
-
-    switch (param)
-    {
-        case MAI2LED_PARAM_LED_PER_BIT:
-            data[0] = mai2led_app_get_led_per_bit();
-            *out_length = 1U;
-            return true;
-
-        case MAI2LED_PARAM_RAINBOW_ENABLE:
-            data[0] = mai2led_app_get_rainbow_mode() ? 1U : 0U;
-            *out_length = 1U;
-            return true;
-
-        default:
-            return false;
-    }
-}
-
-static bool light_magic_write(uint8_t param, uint8_t const *data, uint8_t length)
-{
-    if ((data == NULL) || (length != 1U))
-    {
-        return false;
-    }
-
-    switch (param)
-    {
-        case MAI2LED_PARAM_LED_PER_BIT:
-            if (!led_per_bit_is_valid(data[0]))
-            {
-                return false;
-            }
-
-            mai2led_app_set_led_per_bit(data[0]);
-            return true;
-
-        case MAI2LED_PARAM_RAINBOW_ENABLE:
-            mai2led_app_set_rainbow_mode(data[0] != 0U);
-            return true;
-
-        default:
-            return false;
-    }
-}
-
-static bool light_magic_save(uint8_t param)
-{
-    (void)param;
-    return mai2led_app_save_config_to_flash();
-}
-
-static bool light_magic_load_default(uint8_t param)
-{
-    (void)param;
-    mai2led_app_set_led_per_bit(MAI2LED_APP_DEFAULT_LED_PER_BIT);
-    mai2led_app_set_rainbow_mode(false);
-    memset(app.dummy_eeprom, 0, sizeof(app.dummy_eeprom));
-    return true;
-}
-
-static bool light_magic_info(uint8_t param,
-                             uint8_t *data,
-                             uint8_t max_length,
-                             uint8_t *out_length)
-{
-    (void)param;
-
-    if ((data == NULL) || (out_length == NULL) || (max_length < 2U))
-    {
-        return false;
-    }
-
-    data[0] = MAI2LED_PARAM_LED_PER_BIT;
-    data[1] = MAI2LED_PARAM_RAINBOW_ENABLE;
-    *out_length = 2U;
-    return true;
-}
-
-static bool light_magic_read_all(uint8_t *data, uint8_t max_length, uint8_t *out_length)
-{
-    mai2led_config_payload_t payload;
-
-    if ((data == NULL) || (out_length == NULL) || (max_length < sizeof(payload)))
-    {
-        return false;
-    }
-
-    payload.version = MAI2LED_CONFIG_PAYLOAD_VERSION;
-    payload.led_per_bit = mai2led_app_get_led_per_bit();
-    payload.rainbow_mode_enable = app.rainbow_mode_enabled ? 1U : 0U;
-    memcpy(payload.dummy_eeprom, app.dummy_eeprom, sizeof(payload.dummy_eeprom));
-
-    memcpy(data, &payload, sizeof(payload));
-    *out_length = sizeof(payload);
-
-    return true;
-}
-
-static bool light_magic_write_all(uint8_t const *data, uint8_t length)
-{
-    mai2led_config_payload_t payload;
-
-    if ((data == NULL) || (length != sizeof(payload)))
-    {
-        return false;
-    }
-
-    memcpy(&payload, data, sizeof(payload));
-
-    if ((payload.version != MAI2LED_CONFIG_PAYLOAD_VERSION) ||
-        !led_per_bit_is_valid(payload.led_per_bit))
-    {
-        return false;
-    }
-
-    mai2led_app_set_led_per_bit(payload.led_per_bit);
-    mai2led_app_set_rainbow_mode(payload.rainbow_mode_enable != 0U);
-    memcpy(app.dummy_eeprom, payload.dummy_eeprom, sizeof(app.dummy_eeprom));
-
-    return true;
-}
-
-static void register_light_magic(void)
-{
-    static const magic_config_module_t module =
-    {
-        .module = MAGIC_CONFIG_MODULE_LIGHT,
-        .read = light_magic_read,
-        .write = light_magic_write,
-        .save = light_magic_save,
-        .load_default = light_magic_load_default,
-        .get_info = light_magic_info,
-        .read_all = light_magic_read_all,
-        .write_all = light_magic_write_all
-    };
-
-    (void)magic_config_register(&module);
-}
-
 static uint8_t packet_read(void)
 {
     static uint8_t r_len = 0;
@@ -320,16 +135,6 @@ static uint8_t packet_read(void)
     while (tud_cdc_n_available(MAI2LED_APP_CDC_ITF))
     {
         tud_cdc_n_read(MAI2LED_APP_CDC_ITF, &r, 1);
-
-        if (special_sequence_detect(r))
-        {
-            r_len = 0;
-            checksum = 0;
-            escape = false;
-            memset(&app.req, 0, sizeof(app.req));
-
-            return SPECIAL_MAGIC_CMD;
-        }
 
         if (r == Sync)
         {
@@ -417,139 +222,6 @@ static void packet_write(void)
     tud_cdc_n_write_flush(MAI2LED_APP_CDC_ITF);
 
     app.ack.command = 0;
-}
-
-static bool magic_read_bytes(uint8_t *data, uint8_t length)
-{
-    uint8_t count = 0;
-    uint32_t start = HAL_GetTick();
-
-    while (count < length)
-    {
-        tud_task();
-
-        if (tud_cdc_n_available(MAI2LED_APP_CDC_ITF))
-        {
-            tud_cdc_n_read(MAI2LED_APP_CDC_ITF, &data[count], 1);
-            count++;
-        }
-
-        if ((uint32_t)(HAL_GetTick() - start) > 100U)
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-static void magic_send_response(uint8_t status,
-                                uint8_t module,
-                                uint8_t cmd,
-                                uint8_t param,
-                                uint8_t const *payload,
-                                uint8_t payload_length)
-{
-    uint8_t header[6];
-    uint8_t sum = 0;
-
-    header[0] = 0xACU;
-    header[1] = status;
-    header[2] = module;
-    header[3] = cmd;
-    header[4] = param;
-    header[5] = payload_length;
-
-    for (uint8_t i = 0; i < sizeof(header); i++)
-    {
-        sum += header[i];
-    }
-
-    for (uint8_t i = 0; i < payload_length; i++)
-    {
-        sum += payload[i];
-    }
-
-    tud_cdc_n_write(MAI2LED_APP_CDC_ITF, header, sizeof(header));
-
-    if ((payload != NULL) && (payload_length > 0U))
-    {
-        tud_cdc_n_write(MAI2LED_APP_CDC_ITF, payload, payload_length);
-    }
-
-    tud_cdc_n_write(MAI2LED_APP_CDC_ITF, &sum, 1);
-    tud_cdc_n_write_flush(MAI2LED_APP_CDC_ITF);
-}
-
-static void magic_process_from_cdc(void)
-{
-    uint8_t header[4];
-    uint8_t payload[MAGIC_CONFIG_MAX_PAYLOAD];
-    uint8_t response[MAGIC_CONFIG_MAX_PAYLOAD];
-    uint8_t checksum;
-    uint8_t sum = 0;
-    uint8_t response_length = 0;
-    uint8_t status;
-    uint8_t module;
-    uint8_t cmd;
-    uint8_t param;
-    uint8_t length;
-
-    if (!magic_read_bytes(header, sizeof(header)))
-    {
-        magic_send_response(MAGIC_CONFIG_STATUS_IO_ERROR, 0, 0, 0, NULL, 0);
-        return;
-    }
-
-    module = header[0];
-    cmd = header[1];
-    param = header[2];
-    length = header[3];
-
-    for (uint8_t i = 0; i < sizeof(header); i++)
-    {
-        sum += header[i];
-    }
-
-    if (length > MAGIC_CONFIG_MAX_PAYLOAD)
-    {
-        magic_send_response(MAGIC_CONFIG_STATUS_LENGTH_ERROR, module, cmd, param, NULL, 0);
-        return;
-    }
-
-    if ((length > 0U) && !magic_read_bytes(payload, length))
-    {
-        magic_send_response(MAGIC_CONFIG_STATUS_IO_ERROR, module, cmd, param, NULL, 0);
-        return;
-    }
-
-    for (uint8_t i = 0; i < length; i++)
-    {
-        sum += payload[i];
-    }
-
-    if (!magic_read_bytes(&checksum, 1U))
-    {
-        magic_send_response(MAGIC_CONFIG_STATUS_IO_ERROR, module, cmd, param, NULL, 0);
-        return;
-    }
-
-    if (checksum != sum)
-    {
-        magic_send_response(MAGIC_CONFIG_STATUS_SUM_ERROR, module, cmd, param, NULL, 0);
-        return;
-    }
-
-    status = magic_config_handle(module,
-                                 cmd,
-                                 param,
-                                 payload,
-                                 length,
-                                 response,
-                                 sizeof(response),
-                                 &response_length);
-
-    magic_send_response(status, module, cmd, param, response, response_length);
 }
 
 static void ack_init(uint8_t length, uint8_t status, uint8_t report)
@@ -992,7 +664,6 @@ void mai2led_app_init(mai2led_app_config_t const *config)
     app.last_idle_update_tick = HAL_GetTick() - IDLE_RAINBOW_UPDATE_MS;
 
     (void)mai2led_app_load_config_from_flash();
-    register_light_magic();
 }
 
 void mai2led_app_task(void)
@@ -1007,7 +678,6 @@ void mai2led_app_task(void)
     command = packet_read();
 
     if ((command != 0U) &&
-        (command != SPECIAL_MAGIC_CMD) &&
         (command != AckStatus_SumError) &&
         (command != AckStatus_RecvBfOverFlow))
     {
@@ -1016,11 +686,6 @@ void mai2led_app_task(void)
 
     switch (command)
     {
-        case SPECIAL_MAGIC_CMD:
-            magic_process_from_cdc();
-            app.ack.command = 0;
-            break;
-
         case AckStatus_SumError:
             ack_init(0, AckStatus_SumError, 0);
             break;
@@ -1052,13 +717,16 @@ void mai2led_app_task(void)
         case SetEEPRom:
             if (app.req.Set_adress < sizeof(app.dummy_eeprom))
             {
-                app.dummy_eeprom[app.req.Set_adress] = app.req.writeData;
+                app.dummy_eeprom[app.req.Set_adress] =
+                    app.req.writeData;
             }
             ack_init(0, AckStatus_Ok, AckReport_Ok);
             break;
 
         case GetEEPRom:
-            app.ack.eepData = (app.req.Get_adress < sizeof(app.dummy_eeprom)) ? app.dummy_eeprom[app.req.Get_adress] : 0;
+            app.ack.eepData =
+                (app.req.Get_adress < sizeof(app.dummy_eeprom)) ?
+                app.dummy_eeprom[app.req.Get_adress] : 0U;
             ack_init(1, AckStatus_Ok, AckReport_Ok);
             break;
 
@@ -1095,7 +763,7 @@ void mai2led_app_task(void)
 
 void mai2led_app_set_led_per_bit(uint8_t led_per_bit)
 {
-    if (!led_per_bit_is_valid(led_per_bit))
+    if (!mai2led_app_is_led_per_bit_valid(led_per_bit))
     {
         led_per_bit = MAI2LED_APP_DEFAULT_LED_PER_BIT;
     }
@@ -1127,6 +795,12 @@ bool mai2led_app_get_rainbow_mode(void)
     return app.rainbow_mode_enabled;
 }
 
+void mai2led_app_reset_light_config(void)
+{
+    mai2led_app_set_led_per_bit(MAI2LED_APP_DEFAULT_LED_PER_BIT);
+    mai2led_app_set_rainbow_mode(false);
+}
+
 bool mai2led_app_load_config_from_flash(void)
 {
     mai2led_flash_config_t flash_config;
@@ -1148,13 +822,12 @@ bool mai2led_app_load_config_from_flash(void)
         return false;
     }
 
-    if (led_per_bit_is_valid(flash_config.led_per_bit))
+    if (mai2led_app_is_led_per_bit_valid(flash_config.led_per_bit))
     {
         app.config.led_per_bit = flash_config.led_per_bit;
     }
 
     app.rainbow_mode_enabled = flash_config.rainbow_mode_enable != 0U;
-    memcpy(app.dummy_eeprom, flash_config.dummy_eeprom, sizeof(app.dummy_eeprom));
     app.idle_lights_dirty = true;
     app.last_idle_update_tick = HAL_GetTick() - IDLE_RAINBOW_UPDATE_MS;
 
@@ -1170,7 +843,6 @@ bool mai2led_app_save_config_to_flash(void)
     flash_config.version = MAI2LED_FLASH_CONFIG_VERSION;
     flash_config.led_per_bit = mai2led_app_get_led_per_bit();
     flash_config.rainbow_mode_enable = app.rainbow_mode_enabled ? 1U : 0U;
-    memcpy(flash_config.dummy_eeprom, app.dummy_eeprom, sizeof(app.dummy_eeprom));
 
     return flash_config_write(FLASH_CONFIG_SLOT_LIGHT,
                               &flash_config,

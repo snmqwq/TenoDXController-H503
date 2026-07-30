@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "magic_config.h"
 #include "tusb.h"
 #include "usart.h"
 
@@ -11,9 +12,16 @@
 #define AIME_CDC_RX_BUDGET                128U
 #define AIME_REQUEST_MAX_LENGTH           64U
 #define AIME_RESPONSE_MAX_LENGTH          64U
+#define AIME_REQUEST_TIMEOUT_MS           100U
+#define AIME_HOST_TX_MAX_LENGTH           (MAGIC_CONFIG_MAX_PAYLOAD + 7U)
 
 #define AIME_FRAME_START                  0xE0U
 #define AIME_FRAME_ESCAPE                 0xD0U
+
+#define MAGIC_SEQUENCE_LENGTH               8U
+#define MAGIC_REQUEST_HEADER_LENGTH          4U
+#define MAGIC_REQUEST_TIMEOUT_MS           100U
+#define MAGIC_RESPONSE_SYNC                0xACU
 
 #define PN532_RX_BUDGET                   128U
 #define PN532_UART_RX_CHUNK_LENGTH         64U
@@ -116,14 +124,36 @@ typedef struct
     uint8_t frame_length;
     uint8_t count;
     uint8_t data[AIME_REQUEST_MAX_LENGTH];
+    uint32_t last_byte_tick;
 } aime_rx_parser_t;
+
+typedef enum
+{
+    MAGIC_RX_IDLE,
+    MAGIC_RX_HEADER,
+    MAGIC_RX_PAYLOAD,
+    MAGIC_RX_CHECKSUM
+} magic_rx_state_t;
+
+typedef struct
+{
+    magic_rx_state_t state;
+    uint8_t sequence_index;
+    uint8_t header_index;
+    uint8_t payload_index;
+    uint8_t header[MAGIC_REQUEST_HEADER_LENGTH];
+    uint8_t payload[MAGIC_CONFIG_MAX_PAYLOAD];
+    uint8_t sum;
+    uint32_t last_byte_tick;
+} magic_rx_parser_t;
 
 typedef struct
 {
     aime_rx_parser_t rx;
+    magic_rx_parser_t magic_rx;
     bool tx_pending;
     uint8_t tx_length;
-    uint8_t tx_data[AIME_RESPONSE_MAX_LENGTH];
+    uint8_t tx_data[AIME_HOST_TX_MAX_LENGTH];
 } aime_host_state_t;
 
 static aime_card_state_t card_state;
@@ -146,6 +176,18 @@ static const uint8_t pn532_init_commands[][6] =
 };
 
 static const uint8_t pn532_init_lengths[] = { 3U, 5U, 6U, 4U };
+
+static const uint8_t magic_sequence[MAGIC_SEQUENCE_LENGTH] =
+{
+    0x91U,
+    0x3EU,
+    0xEDU,
+    0x20U,
+    0x7CU,
+    0x99U,
+    0x58U,
+    0xACU
+};
 
 static bool tick_due(uint32_t now, uint32_t due);
 static bool elapsed_at_least(uint32_t now, uint32_t start, uint32_t period);
@@ -186,10 +228,23 @@ static void pn532_handle_data_response(const uint8_t *payload,
                                        uint8_t length,
                                        uint32_t now);
 static void pn532_store_felica_idm(const uint8_t idm[8], uint32_t now);
+static void magic_reset_rx_parser(void);
+static bool magic_detect_sequence_byte(uint8_t data);
+static void magic_parse_byte(uint8_t data);
+static void magic_rx_timeout_task(void);
+static void magic_process_request(void);
+static void magic_queue_response(uint8_t status,
+                                 uint8_t module,
+                                 uint8_t cmd,
+                                 uint8_t param,
+                                 const uint8_t *payload,
+                                 uint8_t payload_length);
 static void aime_reset_rx_parser(void);
 static void aime_host_task(void);
 static void aime_host_rx_task(void);
 static void aime_host_tx_task(void);
+static void aime_rx_timeout_task(void);
+static void aime_demux_parse_byte(uint8_t data);
 static void aime_parse_byte(uint8_t data);
 static void aime_handle_request(const uint8_t *packet, uint8_t length);
 static void aime_queue_response(uint8_t address,
@@ -214,6 +269,7 @@ void aime_reader_app_init(void)
     pn532.link_check_tick = now;
     pn532_reset_rx_parser();
     aime_reset_rx_parser();
+    magic_reset_rx_parser();
     pn532_flush_uart_rx();
 
     pn532_debug_text("[PN532] DEBUG USART1 115200 8N1\r\n");
@@ -1139,12 +1195,228 @@ static void pn532_store_felica_idm(const uint8_t idm[8], uint32_t now)
     card_update(block_data, now);
 }
 
+static void magic_reset_rx_parser(void)
+{
+    host.magic_rx.state = MAGIC_RX_IDLE;
+    host.magic_rx.sequence_index = 0U;
+    host.magic_rx.header_index = 0U;
+    host.magic_rx.payload_index = 0U;
+    host.magic_rx.sum = 0U;
+    host.magic_rx.last_byte_tick = 0U;
+}
+
+static bool magic_detect_sequence_byte(uint8_t data)
+{
+    if (data == magic_sequence[host.magic_rx.sequence_index])
+    {
+        host.magic_rx.sequence_index++;
+    }
+    else
+    {
+        host.magic_rx.sequence_index =
+            (data == magic_sequence[0]) ? 1U : 0U;
+    }
+
+    if (host.magic_rx.sequence_index < MAGIC_SEQUENCE_LENGTH)
+    {
+        return false;
+    }
+
+    host.magic_rx.state = MAGIC_RX_HEADER;
+    host.magic_rx.sequence_index = 0U;
+    host.magic_rx.header_index = 0U;
+    host.magic_rx.payload_index = 0U;
+    host.magic_rx.sum = 0U;
+    host.magic_rx.last_byte_tick = HAL_GetTick();
+    return true;
+}
+
+static void magic_parse_byte(uint8_t data)
+{
+    uint8_t payload_length;
+
+    host.magic_rx.last_byte_tick = HAL_GetTick();
+
+    switch (host.magic_rx.state)
+    {
+        case MAGIC_RX_HEADER:
+            host.magic_rx.header[host.magic_rx.header_index++] = data;
+            host.magic_rx.sum = (uint8_t)(host.magic_rx.sum + data);
+
+            if (host.magic_rx.header_index < MAGIC_REQUEST_HEADER_LENGTH)
+            {
+                return;
+            }
+
+            payload_length = host.magic_rx.header[3];
+            if (payload_length > MAGIC_CONFIG_MAX_PAYLOAD)
+            {
+                magic_queue_response(MAGIC_CONFIG_STATUS_LENGTH_ERROR,
+                                     host.magic_rx.header[0],
+                                     host.magic_rx.header[1],
+                                     host.magic_rx.header[2],
+                                     NULL,
+                                     0U);
+                magic_reset_rx_parser();
+                return;
+            }
+
+            host.magic_rx.state = (payload_length == 0U) ?
+                                  MAGIC_RX_CHECKSUM :
+                                  MAGIC_RX_PAYLOAD;
+            return;
+
+        case MAGIC_RX_PAYLOAD:
+            payload_length = host.magic_rx.header[3];
+            host.magic_rx.payload[host.magic_rx.payload_index++] = data;
+            host.magic_rx.sum = (uint8_t)(host.magic_rx.sum + data);
+
+            if (host.magic_rx.payload_index >= payload_length)
+            {
+                host.magic_rx.state = MAGIC_RX_CHECKSUM;
+            }
+            return;
+
+        case MAGIC_RX_CHECKSUM:
+            if (data == host.magic_rx.sum)
+            {
+                magic_process_request();
+            }
+            else
+            {
+                magic_queue_response(MAGIC_CONFIG_STATUS_SUM_ERROR,
+                                     host.magic_rx.header[0],
+                                     host.magic_rx.header[1],
+                                     host.magic_rx.header[2],
+                                     NULL,
+                                     0U);
+            }
+            magic_reset_rx_parser();
+            return;
+
+        case MAGIC_RX_IDLE:
+        default:
+            magic_reset_rx_parser();
+            return;
+    }
+}
+
+static void magic_rx_timeout_task(void)
+{
+    uint8_t module = 0U;
+    uint8_t cmd = 0U;
+    uint8_t param = 0U;
+
+    if ((host.magic_rx.state == MAGIC_RX_IDLE) ||
+        !elapsed_at_least(HAL_GetTick(),
+                          host.magic_rx.last_byte_tick,
+                          MAGIC_REQUEST_TIMEOUT_MS))
+    {
+        return;
+    }
+
+    if (host.magic_rx.header_index > 0U)
+    {
+        module = host.magic_rx.header[0];
+    }
+    if (host.magic_rx.header_index > 1U)
+    {
+        cmd = host.magic_rx.header[1];
+    }
+    if (host.magic_rx.header_index > 2U)
+    {
+        param = host.magic_rx.header[2];
+    }
+
+    magic_queue_response(MAGIC_CONFIG_STATUS_IO_ERROR,
+                         module,
+                         cmd,
+                         param,
+                         NULL,
+                         0U);
+    magic_reset_rx_parser();
+}
+
+static void magic_process_request(void)
+{
+    uint8_t response[MAGIC_CONFIG_MAX_PAYLOAD];
+    uint8_t response_length = 0U;
+    uint8_t module = host.magic_rx.header[0];
+    uint8_t cmd = host.magic_rx.header[1];
+    uint8_t param = host.magic_rx.header[2];
+    uint8_t payload_length = host.magic_rx.header[3];
+    uint8_t status;
+
+    status = magic_config_handle(module,
+                                 cmd,
+                                 param,
+                                 host.magic_rx.payload,
+                                 payload_length,
+                                 response,
+                                 (uint8_t)sizeof(response),
+                                 &response_length);
+
+    magic_queue_response(status,
+                         module,
+                         cmd,
+                         param,
+                         response,
+                         response_length);
+}
+
+static void magic_queue_response(uint8_t status,
+                                 uint8_t module,
+                                 uint8_t cmd,
+                                 uint8_t param,
+                                 const uint8_t *payload,
+                                 uint8_t payload_length)
+{
+    uint8_t sum = 0U;
+    uint8_t index;
+    uint8_t output_length;
+
+    if (host.tx_pending ||
+        (payload_length > MAGIC_CONFIG_MAX_PAYLOAD) ||
+        ((payload == NULL) && (payload_length != 0U)) ||
+        ((uint16_t)payload_length + 7U > sizeof(host.tx_data)))
+    {
+        return;
+    }
+
+    host.tx_data[0] = MAGIC_RESPONSE_SYNC;
+    host.tx_data[1] = status;
+    host.tx_data[2] = module;
+    host.tx_data[3] = cmd;
+    host.tx_data[4] = param;
+    host.tx_data[5] = payload_length;
+
+    for (index = 0U; index < 6U; index++)
+    {
+        sum = (uint8_t)(sum + host.tx_data[index]);
+    }
+
+    if (payload_length != 0U)
+    {
+        memcpy(&host.tx_data[6], payload, payload_length);
+        for (index = 0U; index < payload_length; index++)
+        {
+            sum = (uint8_t)(sum + payload[index]);
+        }
+    }
+
+    output_length = (uint8_t)(6U + payload_length);
+    host.tx_data[output_length++] = sum;
+    host.tx_length = output_length;
+    host.tx_pending = true;
+}
+
 static void aime_reset_rx_parser(void)
 {
     host.rx.active = false;
     host.rx.escaped = false;
     host.rx.frame_length = 0U;
     host.rx.count = 0U;
+    host.rx.last_byte_tick = 0U;
 }
 
 static void aime_host_task(void)
@@ -1152,12 +1424,19 @@ static void aime_host_task(void)
     if (!tud_cdc_n_ready(AIME_CDC_ITF))
     {
         aime_reset_rx_parser();
+        magic_reset_rx_parser();
         host.tx_pending = false;
+        host.tx_length = 0U;
         return;
     }
 
     aime_host_tx_task();
-    aime_host_rx_task();
+    aime_rx_timeout_task();
+    magic_rx_timeout_task();
+    if (!host.tx_pending)
+    {
+        aime_host_rx_task();
+    }
     aime_host_tx_task();
 }
 
@@ -1166,14 +1445,15 @@ static void aime_host_rx_task(void)
     uint16_t count = 0U;
     uint8_t data;
 
-    while ((tud_cdc_n_available(AIME_CDC_ITF) != 0U) &&
+    while (!host.tx_pending &&
+           (tud_cdc_n_available(AIME_CDC_ITF) != 0U) &&
            (count < AIME_CDC_RX_BUDGET))
     {
         if (tud_cdc_n_read(AIME_CDC_ITF, &data, 1U) != 1U)
         {
             break;
         }
-        aime_parse_byte(data);
+        aime_demux_parse_byte(data);
         count++;
     }
 }
@@ -1195,6 +1475,43 @@ static void aime_host_tx_task(void)
     }
 }
 
+static void aime_rx_timeout_task(void)
+{
+    if (host.rx.active &&
+        elapsed_at_least(HAL_GetTick(),
+                         host.rx.last_byte_tick,
+                         AIME_REQUEST_TIMEOUT_MS))
+    {
+        aime_reset_rx_parser();
+    }
+}
+
+static void aime_demux_parse_byte(uint8_t data)
+{
+    if (host.magic_rx.state != MAGIC_RX_IDLE)
+    {
+        magic_parse_byte(data);
+        return;
+    }
+
+    if (host.rx.active)
+    {
+        aime_parse_byte(data);
+        return;
+    }
+
+    if (magic_detect_sequence_byte(data))
+    {
+        return;
+    }
+
+    aime_parse_byte(data);
+    if (host.rx.active)
+    {
+        host.magic_rx.sequence_index = 0U;
+    }
+}
+
 static void aime_parse_byte(uint8_t data)
 {
     uint8_t checksum = 0U;
@@ -1206,6 +1523,7 @@ static void aime_parse_byte(uint8_t data)
         host.rx.escaped = false;
         host.rx.frame_length = 0U;
         host.rx.count = 0U;
+        host.rx.last_byte_tick = HAL_GetTick();
         return;
     }
 
@@ -1213,6 +1531,8 @@ static void aime_parse_byte(uint8_t data)
     {
         return;
     }
+
+    host.rx.last_byte_tick = HAL_GetTick();
 
     if (data == AIME_FRAME_ESCAPE)
     {

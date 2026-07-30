@@ -32,8 +32,8 @@ https://github.com/snmqwq/TenoDXController-H503
 - MCU：STM32H503CBT6。
 - USB：TinyUSB，3 CDC + 1 HID keyboard。
 - CDC0：触摸。
-- CDC1：Mai2LED、灯光、magic 配置。
-- CDC2：Aime 读卡器主机协议。
+- CDC1：Mai2LED 灯光协议。
+- CDC2：Aime 读卡器主机协议和 magic 配置。
 - HID：11KRO keyboard。
 - I2C1：PB7 SDA、PB8 SCL，PSoC 从设备地址 0x08 和 0x09。
 - USART2：PB4 TX、PB5 RX，115200 8N1，连接 PN532。
@@ -55,7 +55,7 @@ https://github.com/snmqwq/TenoDXController-H503
 - Core/Src/aime_reader_app.c 已实现 PN532 状态机及 Aime 主机协议。
 - PN532 使用 USART2 中断和 Receive-to-IDLE 环形缓冲。
 - 支持 FeliCa IDm 和 MIFARE Block 2 路径。
-- Aime 主机协议走 CDC2。
+- Aime 主机协议和 Magic 配置协议走 CDC2，由非阻塞分流器区分。
 - PN532_UART_DEBUG_ENABLED 当前为 0U。
 - 原始 PC Python 桥接与移植说明位于 ref/Aime。
 
@@ -82,11 +82,13 @@ Flash 与 magic：
 - 最后 8 KiB Flash 分为 touch、light、reader、keyboard 四个独立 2 KiB 槽。
 - module：global=0x00、touch=0x10、light=0x20、reader=0x30、keyboard=0x40。
 - WRITE 只写 RAM，SAVE 才写 Flash。
-- Magic 走 CDC1，SPECIAL_MAGIC_CMD=0xB7。
+- Magic 走 CDC2；Mai2LED 不再包含 Magic 传输或注册代码。
 - magic sequence：91 3E ED 20 7C 99 58 AC。
 - 基础命令 READ=01、WRITE=02、SAVE=03、LOAD_DEFAULT=04、GET_INFO=05。
 - 全局命令 READ_ALL=81、WRITE_ALL=82、SAVE_ALL=83、ENTER_DFU=84。
 - DFU confirm=A5。
+- light READ_ALL/WRITE_ALL 使用 `[02, led_per_bit, rainbow_enable]` 三字节载荷。
+- dummy EEPROM 不对 Magic 开放、不写入 Flash，只由 CDC1 Mai2LED 的 SetEEPRom/GetEEPRom 访问。
 
 请先只汇报：
 1. 当前分支、HEAD、工作树状态。
