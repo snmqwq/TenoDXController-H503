@@ -1,6 +1,6 @@
 # TenoDXController-H503
 
-基于 STM32H503CBT6 的 TenoDX / maimai 控制器固件。工程使用 STM32CubeIDE、STM32 HAL、TinyUSB 和 WS28XX 驱动，提供触摸、灯光、Aime 读卡器和 11KRO 键盘接口。
+基于 STM32H503CBT6 的 TenoDX / maimai 控制器固件。工程使用 STM32CubeIDE、STM32 HAL、TinyUSB 和 WS28XX 驱动，提供触摸、灯光、Aime 读卡器和 12KRO 键盘接口。
 
 > 当前 `main` 已整合 `1.4-aime-touch_test`。触摸模块目前输出 PSoC raw 测试数据，尚未接入最终触摸判定算法。
 
@@ -23,20 +23,23 @@ USB 标识为 VID `0xCAFE`、PID `0x4313`，产品名为 `TenoDX Controller`。
 | CDC0 | TenoDX Touch Port | 双 PSoC raw 触摸数据 |
 | CDC1 | TenoDX LED Port | Mai2LED 灯光协议 |
 | CDC2 | TenoDX Aime Port | Aime 主机协议与 Magic 配置协议 |
-| HID0 | Keyboard | 11KRO 键盘报告 |
+| HID0 | Keyboard | 12KRO 键盘报告 |
 
 ## 按键
 
-工程只使用 `BTN0..BTN10`，共 11 个按键。
+工程使用 `BTN0..BTN11`，共 12 个按键。BTN0..BTN7 为主按键，可在 1P 和 2P 两套布局之间选择；BTN8..BTN11 为四个可独立修改键值的副按键。
 
-| 按键 | 默认键值 | 配置方式 |
-| --- | --- | --- |
-| BTN0..BTN7 | `w e d c x z a q` | 固定，不写入键盘配置 |
-| BTN8 | `3` | Magic 配置，可保存到 Flash |
-| BTN9 | `keypad_multiply` | Magic 配置，可保存到 Flash |
-| BTN10 | `9` | Magic 配置，可保存到 Flash |
+四个副按键依次映射为 `BTN8=PB0`、`BTN9=PB1`、`BTN10=PB2`、`BTN11=PB10`，均为上拉输入、低电平有效。
 
-键盘以 11KRO 自定义 HID 报告发送。长按 BTN8 约 5 秒会恢复空闲灯效；一次按住只触发一次，松开后才可再次触发。
+| 按键 | 1P 布局 | 2P 布局 | 配置方式 |
+| --- | --- | --- | --- |
+| BTN0..BTN7 | `w e d c x z a q` | `keypad_8 keypad_9 keypad_6 keypad_3 keypad_2 keypad_1 keypad_4 keypad_7` | Magic 选择布局，默认 1P，可保存到 Flash |
+| BTN8 | `3` | `3` | Magic 修改键值，可保存到 Flash |
+| BTN9 | `keypad_multiply` | `keypad_multiply` | Magic 修改键值，可保存到 Flash |
+| BTN10 | `8` | `8` | Magic 修改键值，可保存到 Flash |
+| BTN11 | `9` | `9` | Magic 修改键值，可保存到 Flash |
+
+键盘以 12KRO 自定义 HID 报告发送。长按 BTN8 约 5 秒会恢复空闲灯效；一次按住只触发一次，松开后才可再次触发。
 
 ## 灯光
 
@@ -110,7 +113,7 @@ magic_seq + [module, cmd, param, len, payload..., sum]
 | global | `0x00` | 全局命令 |
 | touch | `0x10` | 空配置占位，当前不注册 |
 | light | `0x20` | 已实现 |
-| keyboard | `0x40` | 已实现 BTN8..BTN10 配置 |
+| keyboard | `0x40` | 已实现主按键 1P/2P 布局选择及 BTN8..BTN11 配置 |
 
 Aime 和 button 不提供 Magic 配置模块；`0x30` 保留为空洞，不分配给 Aime。
 
@@ -143,7 +146,20 @@ python -m pip install -r tools/requirements.txt
 python tools/magic_config_tool.py
 ```
 
-`magic_config_tool.py` 是交互式命令行工具，支持串口选择、灯光配置、BTN8..BTN10 键值配置、原始 Magic 请求和进入系统 DFU。连接时应选择 `TenoDX Aime Port`；配置期间不要让游戏或其他程序同时占用该 COM 口。
+`magic_config_tool.py` 是交互式命令行工具，支持串口选择、灯光配置、主按键 1P/2P 布局选择、BTN8..BTN11 键值配置、原始 Magic 请求和进入系统 DFU。连接时应选择 `TenoDX Aime Port`；配置期间不要让游戏或其他程序同时占用该 COM 口。
+
+键盘配置示例：
+
+```text
+keyboard layout 1p
+keyboard layout 2p
+keyboard player 2p
+keyboard set 11 enter
+keyboard set-all 3 keypad_multiply 8 9
+keyboard save
+```
+
+`keyboard layout`（或别名 `keyboard player`）不带参数时读取当前主按键布局，带 `1p` 或 `2p` 时修改 RAM 中的布局。布局参数为 `0x81`；与副按键键值一样，修改后需执行 `keyboard save` 才会保存到 Flash。
 
 ## 构建
 

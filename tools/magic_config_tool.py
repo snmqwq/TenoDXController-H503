@@ -63,9 +63,17 @@ GLOBAL_CMD_ENTER_DFU = 0x84
 GLOBAL_DFU_CONFIRM = 0xA5
 
 KEYBOARD_CONFIG_KEY_FIRST = 8
-KEYBOARD_CONFIG_KEY_COUNT = 3
+KEYBOARD_CONFIG_KEY_COUNT = 4
 KEYBOARD_PARAM_CONFIG_KEYS = 0x80
-KEYBOARD_TOTAL_KEYS = 11
+KEYBOARD_PARAM_MAIN_LAYOUT = 0x81
+KEYBOARD_TOTAL_KEYS = 12
+KEYBOARD_MAIN_LAYOUTS = {
+    "1p": 0,
+    "2p": 1,
+}
+KEYBOARD_MAIN_LAYOUT_NAMES = {
+    value: name.upper() for name, value in KEYBOARD_MAIN_LAYOUTS.items()
+}
 
 
 HID_KEYS: dict[str, int] = {"none": 0x00}
@@ -275,8 +283,23 @@ def parse_key(text: str) -> int:
     return parse_u8(text)
 
 
+def parse_keyboard_layout(text: str) -> int:
+    lowered = text.lower()
+    if lowered in KEYBOARD_MAIN_LAYOUTS:
+        return KEYBOARD_MAIN_LAYOUTS[lowered]
+
+    value = parse_u8(text)
+    if value not in KEYBOARD_MAIN_LAYOUT_NAMES:
+        raise ValueError("layout must be 1p or 2p")
+    return value
+
+
 def key_name(value: int) -> str:
     return HID_KEY_NAMES.get(value, f"0x{value:02X}")
+
+
+def keyboard_layout_name(value: int) -> str:
+    return KEYBOARD_MAIN_LAYOUT_NAMES.get(value, f"0x{value:02X}")
 
 
 def hex_bytes(data: bytes) -> str:
@@ -414,14 +437,29 @@ def read_keyboard_key(client: MagicConfigClient, index: int) -> int | None:
     return None
 
 
+def read_keyboard_layout(client: MagicConfigClient) -> int | None:
+    response = safe_request(
+        client,
+        MODULES["keyboard"],
+        COMMANDS["read"],
+        KEYBOARD_PARAM_MAIN_LAYOUT,
+    )
+    if response and response.ok and response.payload:
+        return response.payload[0]
+    return None
+
+
 def show_keyboard(client: MagicConfigClient) -> None:
     print("\nKeyboard keys")
+    layout = read_keyboard_layout(client)
+    if layout is not None:
+        print(f"  main layout: {keyboard_layout_name(layout)}")
     for index in range(KEYBOARD_TOTAL_KEYS):
         value = read_keyboard_key(client, index)
         if value is None:
             continue
-        fixed = " fixed" if index < KEYBOARD_CONFIG_KEY_FIRST else " configurable"
-        print(f"  key{index}: 0x{value:02X} ({key_name(value)}){fixed}")
+        key_type = " main layout" if index < KEYBOARD_CONFIG_KEY_FIRST else " configurable"
+        print(f"  key{index}: 0x{value:02X} ({key_name(value)}){key_type}")
 
 
 def print_general_help() -> None:
@@ -443,7 +481,8 @@ def print_general_help() -> None:
   led set rainbow on
   keyboard get
   keyboard set 8 a
-  keyboard set-all 3 kp_multiply 9
+  keyboard set-all 3 kp_multiply 8 9
+  keyboard layout 2p
   raw light read 0x01
 """.strip()
     )
@@ -483,12 +522,14 @@ def print_keyboard_help() -> None:
     print(
         """
 keyboard 命令:
-  keyboard get                读取全部 11 个 HID 键位
-  keyboard get <0..10>        读取指定键位
-  keyboard set <8|9|10> <hid-key|byte>
-                              设置可配置键位；0..7 为固定键
-  keyboard set-all <key8> <key9> <key10>
-                              一次设置 key8/key9/key10
+  keyboard get                读取主按键布局和全部 12 个 HID 键位
+  keyboard get <0..11>        读取指定键位
+  keyboard layout [1p|2p]     读取或选择 BTN0..BTN7 主按键布局
+  keyboard player [1p|2p]     layout 的兼容别名
+  keyboard set <8|9|10|11> <hid-key|byte>
+                              设置 BTN8..BTN11 副按键键值
+  keyboard set-all <key8> <key9> <key10> <key11>
+                              一次设置四个副按键
   keyboard save               保存键盘配置到 Flash
   keyboard defaults           恢复键盘默认配置到 RAM
   keyboard keys               列出可用 HID key 名称
@@ -646,6 +687,31 @@ def cmd_keyboard(client: MagicConfigClient, argv: list[str]) -> None:
         return
 
     command = argv[0].lower()
+    if command in ("layout", "player"):
+        if len(argv) == 1:
+            layout = read_keyboard_layout(client)
+            if layout is not None:
+                print(f"Main layout = {keyboard_layout_name(layout)}")
+            return
+        if len(argv) != 2:
+            command_error("keyboard layout 接受 0 或 1 个参数: [1p|2p]", "keyboard")
+            return
+        try:
+            layout = parse_keyboard_layout(argv[1])
+        except ValueError as exc:
+            command_error(str(exc), "keyboard")
+            return
+        response = safe_request(
+            client,
+            MODULES["keyboard"],
+            COMMANDS["write"],
+            KEYBOARD_PARAM_MAIN_LAYOUT,
+            bytes([layout]),
+        )
+        if response and response.ok:
+            print(f"Main layout = {keyboard_layout_name(layout)}")
+        return
+
     if command in ("get", "show", "list"):
         if len(argv) == 1:
             show_keyboard(client)
@@ -659,17 +725,17 @@ def cmd_keyboard(client: MagicConfigClient, argv: list[str]) -> None:
             command_error(str(exc), "keyboard")
             return
         if index >= KEYBOARD_TOTAL_KEYS:
-            command_error("键位范围必须是 0..10。", "keyboard")
+            command_error("键位范围必须是 0..11。", "keyboard")
             return
         value = read_keyboard_key(client, index)
         if value is not None:
-            fixed = "fixed" if index < KEYBOARD_CONFIG_KEY_FIRST else "configurable"
-            print(f"key{index}: 0x{value:02X} ({key_name(value)}) {fixed}")
+            key_type = "main layout" if index < KEYBOARD_CONFIG_KEY_FIRST else "configurable"
+            print(f"key{index}: 0x{value:02X} ({key_name(value)}) {key_type}")
         return
 
     if command == "set":
         if len(argv) != 3:
-            command_error("keyboard set 需要参数: <8|9|10> <hid-key|byte>", "keyboard")
+            command_error("keyboard set 需要参数: <8|9|10|11> <hid-key|byte>", "keyboard")
             return
         try:
             index = parse_u8(argv[1])
@@ -678,14 +744,14 @@ def cmd_keyboard(client: MagicConfigClient, argv: list[str]) -> None:
             command_error(str(exc), "keyboard")
             return
         if not KEYBOARD_CONFIG_KEY_FIRST <= index < KEYBOARD_CONFIG_KEY_FIRST + KEYBOARD_CONFIG_KEY_COUNT:
-            command_error("只有 key8、key9、key10 可配置。", "keyboard")
+            command_error("只有 key8、key9、key10、key11 可配置。", "keyboard")
             return
         safe_request(client, MODULES["keyboard"], COMMANDS["write"], index, bytes([value]))
         return
 
     if command == "set-all":
-        if len(argv) != 4:
-            command_error("keyboard set-all 需要参数: <key8> <key9> <key10>", "keyboard")
+        if len(argv) != 5:
+            command_error("keyboard set-all 需要参数: <key8> <key9> <key10> <key11>", "keyboard")
             return
         try:
             values = bytes(parse_key(item) for item in argv[1:])

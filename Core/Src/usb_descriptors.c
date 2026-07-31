@@ -70,7 +70,7 @@ uint8_t const * tud_descriptor_device_cb(void)
 // HID Report Descriptor
 //--------------------------------------------------------------------
 
-#define TUD_HID_REPORT_DESC_KEYBOARD_11KRO(...) \
+#define TUD_HID_REPORT_DESC_KEYBOARD_12KRO(...) \
   HID_USAGE_PAGE ( HID_USAGE_PAGE_DESKTOP     )                    ,\
   HID_USAGE      ( HID_USAGE_DESKTOP_KEYBOARD )                    ,\
   HID_COLLECTION ( HID_COLLECTION_APPLICATION )                    ,\
@@ -100,14 +100,14 @@ uint8_t const * tud_descriptor_device_cb(void)
       HID_USAGE_MAX_N  ( 255, 2                              )     ,\
       HID_LOGICAL_MIN  ( 0                                   )     ,\
       HID_LOGICAL_MAX_N( 255, 2                              )     ,\
-      HID_REPORT_COUNT ( 11                                  )     ,\
+      HID_REPORT_COUNT ( 12                                  )     ,\
       HID_REPORT_SIZE  ( 8                                   )     ,\
       HID_INPUT        ( HID_DATA | HID_ARRAY | HID_ABSOLUTE )     ,\
   HID_COLLECTION_END
 
 uint8_t const desc_hid_report[] =
 {
-  TUD_HID_REPORT_DESC_KEYBOARD_11KRO()
+  TUD_HID_REPORT_DESC_KEYBOARD_12KRO()
 };
 
 uint8_t const * tud_hid_descriptor_report_cb(uint8_t instance)

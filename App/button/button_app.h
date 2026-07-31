@@ -8,7 +8,7 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
-#define BUTTON_APP_COUNT       11U
+#define BUTTON_APP_COUNT       12U
 #define BUTTON_APP_MAIN_COUNT   8U
 
 typedef void (*button_app_callback_t)(uint8_t button_id, void *context);

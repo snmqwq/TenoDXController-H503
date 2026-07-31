@@ -50,6 +50,9 @@ static uint8_t button_app_read_gpio(uint8_t button_id)
         case 10:
             return HAL_GPIO_ReadPin(BTN10_GPIO_Port, BTN10_Pin);
 
+        case 11:
+            return HAL_GPIO_ReadPin(BTN11_GPIO_Port, BTN11_Pin);
+
         default:
             return GPIO_PIN_SET;
     }
