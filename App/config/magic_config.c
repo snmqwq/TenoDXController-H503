@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <string.h>
 
-#define MAGIC_CONFIG_MODULE_MAX    4U
+#define MAGIC_CONFIG_MODULE_MAX         3U
 #define MAGIC_CONFIG_DFU_DELAY_MS       100U
 #define MAGIC_CONFIG_NVIC_CLEAR_REGS    8U
 

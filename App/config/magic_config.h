@@ -11,7 +11,7 @@ extern "C" {
 #define MAGIC_CONFIG_MODULE_GLOBAL     0x00U
 #define MAGIC_CONFIG_MODULE_TOUCH      0x10U
 #define MAGIC_CONFIG_MODULE_LIGHT      0x20U
-#define MAGIC_CONFIG_MODULE_READER     0x30U
+/* Module 0x30 is reserved and must not be reused. */
 #define MAGIC_CONFIG_MODULE_KEYBOARD   0x40U
 
 #define MAGIC_CONFIG_CMD_READ          0x01U

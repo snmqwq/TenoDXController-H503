@@ -15,10 +15,10 @@ extern "C" {
 typedef enum
 {
     FLASH_CONFIG_SLOT_TOUCH = 0,
-    FLASH_CONFIG_SLOT_LIGHT,
-    FLASH_CONFIG_SLOT_READER,
-    FLASH_CONFIG_SLOT_KEYBOARD,
-    FLASH_CONFIG_SLOT_COUNT
+    FLASH_CONFIG_SLOT_LIGHT = 1,
+    FLASH_CONFIG_SLOT_RESERVED = 2,
+    FLASH_CONFIG_SLOT_KEYBOARD = 3,
+    FLASH_CONFIG_SLOT_COUNT = 4
 } flash_config_slot_t;
 
 bool flash_config_read(flash_config_slot_t slot,

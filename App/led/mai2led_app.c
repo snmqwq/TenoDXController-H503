@@ -1,6 +1,5 @@
 #include "mai2led_app.h"
 
-#include "config/flash_config.h"
 #include "main.h"
 #include "mai2led.h"
 #include "tusb.h"
@@ -14,8 +13,6 @@
 #define IDLE_RAINBOW_PRESS_SATURATION  64U
 #define IDLE_RAINBOW_PRESS_VALUE       255U
 
-#define MAI2LED_FLASH_CONFIG_MAGIC     0x324C414DUL
-#define MAI2LED_FLASH_CONFIG_VERSION   3U
 #define MAI2LED_DUMMY_EEPROM_SIZE      8U
 
 typedef struct
@@ -24,16 +21,6 @@ typedef struct
     uint8_t g;
     uint8_t b;
 } RGB_t;
-
-typedef struct
-{
-    uint32_t magic;
-    uint8_t version;
-    uint8_t led_per_bit;
-    uint8_t rainbow_mode_enable;
-    uint8_t reserved0;
-    uint8_t reserved[12];
-} mai2led_flash_config_t;
 
 typedef struct
 {
@@ -662,8 +649,6 @@ void mai2led_app_init(mai2led_app_config_t const *config)
     app.rainbow_mode_enabled = false;
     app.initialized = true;
     app.last_idle_update_tick = HAL_GetTick() - IDLE_RAINBOW_UPDATE_MS;
-
-    (void)mai2led_app_load_config_from_flash();
 }
 
 void mai2led_app_task(void)
@@ -799,52 +784,4 @@ void mai2led_app_reset_light_config(void)
 {
     mai2led_app_set_led_per_bit(MAI2LED_APP_DEFAULT_LED_PER_BIT);
     mai2led_app_set_rainbow_mode(false);
-}
-
-bool mai2led_app_load_config_from_flash(void)
-{
-    mai2led_flash_config_t flash_config;
-    uint16_t length = 0;
-
-    memset(&flash_config, 0, sizeof(flash_config));
-    if (!flash_config_read(FLASH_CONFIG_SLOT_LIGHT,
-                           &flash_config,
-                           sizeof(flash_config),
-                           &length))
-    {
-        return false;
-    }
-
-    if ((length != sizeof(flash_config)) ||
-        (flash_config.magic != MAI2LED_FLASH_CONFIG_MAGIC) ||
-        (flash_config.version != MAI2LED_FLASH_CONFIG_VERSION))
-    {
-        return false;
-    }
-
-    if (mai2led_app_is_led_per_bit_valid(flash_config.led_per_bit))
-    {
-        app.config.led_per_bit = flash_config.led_per_bit;
-    }
-
-    app.rainbow_mode_enabled = flash_config.rainbow_mode_enable != 0U;
-    app.idle_lights_dirty = true;
-    app.last_idle_update_tick = HAL_GetTick() - IDLE_RAINBOW_UPDATE_MS;
-
-    return true;
-}
-
-bool mai2led_app_save_config_to_flash(void)
-{
-    mai2led_flash_config_t flash_config;
-
-    memset(&flash_config, 0xff, sizeof(flash_config));
-    flash_config.magic = MAI2LED_FLASH_CONFIG_MAGIC;
-    flash_config.version = MAI2LED_FLASH_CONFIG_VERSION;
-    flash_config.led_per_bit = mai2led_app_get_led_per_bit();
-    flash_config.rainbow_mode_enable = app.rainbow_mode_enabled ? 1U : 0U;
-
-    return flash_config_write(FLASH_CONFIG_SLOT_LIGHT,
-                              &flash_config,
-                              sizeof(flash_config));
 }

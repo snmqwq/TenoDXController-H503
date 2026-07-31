@@ -1,5 +1,6 @@
 #include "mai2touch.h"
 #include "cdc_manager.h"
+#include "main.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>

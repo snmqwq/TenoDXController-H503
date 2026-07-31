@@ -26,7 +26,6 @@ MODULES = {
     "global": 0x00,
     "touch": 0x10,
     "light": 0x20,
-    "reader": 0x30,
     "keyboard": 0x40,
 }
 
@@ -433,7 +432,7 @@ def print_general_help() -> None:
   led <command> [args]        灯光配置
   keyboard <command> [args]   键盘配置
   touch help                  触摸配置占位，当前暂不完善
-  aime help                   Aime 读卡配置占位，当前暂不完善
+  aime help                   说明 Aime 不提供配置接口
   dfu enter                   进入 DFU
   raw <module> <cmd> <param> [payload bytes...]
   exit                        断开当前串口并返回串口连接层
@@ -518,8 +517,8 @@ aime 命令:
   aime help                   显示本说明
 
 说明:
-  当前先不完善 Aime 读卡配置命令，不会向设备发送 aime/reader 配置请求。
-  后续读卡器参数需要先确认固件端协议和参数含义后再接入。
+  Aime/PN532 功能不提供 Magic 配置接口。
+  本命令只显示说明，不会向设备发送 aime/reader 配置请求。
 """.strip()
     )
 
@@ -544,7 +543,7 @@ raw 命令:
   raw <module> <command> <param> [payload bytes...]
 
 module:
-  global, touch, light, reader, keyboard，或 0x00..0xFF
+  global, touch, light, keyboard，或 0x00..0xFF
 
 command:
   read, write, save, defaults, info, read-all, write-all, save-all, enter-dfu

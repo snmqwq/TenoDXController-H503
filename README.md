@@ -108,10 +108,11 @@ magic_seq + [module, cmd, param, len, payload..., sum]
 | 模块 | 编号 | 当前状态 |
 | --- | ---: | --- |
 | global | `0x00` | 全局命令 |
-| touch | `0x10` | 编号与 Flash 槽已预留 |
+| touch | `0x10` | 空配置占位，当前不注册 |
 | light | `0x20` | 已实现 |
-| reader | `0x30` | 编号与 Flash 槽已预留 |
 | keyboard | `0x40` | 已实现 BTN8..BTN10 配置 |
+
+Aime 和 button 不提供 Magic 配置模块；`0x30` 保留为空洞，不分配给 Aime。
 
 基础命令为 `READ 0x01`、`WRITE 0x02`、`SAVE 0x03`、`LOAD_DEFAULT 0x04` 和 `GET_INFO 0x05`；全局命令为 `READ_ALL 0x81`、`WRITE_ALL 0x82`、`SAVE_ALL 0x83` 和 `ENTER_DFU 0x84`。
 
@@ -130,7 +131,7 @@ light 模块的 `READ_ALL` / `WRITE_ALL` 载荷版本为 `0x02`，格式为
 | --- | --- |
 | 0 | touch |
 | 1 | light |
-| 2 | reader |
+| 2 | 历史布局保留，不分配给 Aime |
 | 3 | keyboard |
 
 ## 配置工具
@@ -166,11 +167,11 @@ python tools/magic_config_tool.py
 | 路径 | 内容 |
 | --- | --- |
 | `App/` | 应用模块及统一的 `app_init()` / `app_task()` 入口 |
-| `App/aime/` | PN532 通信、Aime 协议和 Magic 协议识别 |
-| `App/config/` | Magic 命令及 touch、led、kb 的配置管理 |
+| `App/aime/` | PN532 通信、Aime 协议、Magic 协议识别与 CDC2 分流 |
+| `App/config/` | Magic 命令、led/kb 配置，以及空的 touch 配置占位 |
 | `App/led/` | Mai2LED 控制 |
-| `App/button/` | 第三方按键库封装 |
-| `App/kb/` | USB 键盘功能 |
+| `App/button/` | 按键扫描接口及内部第三方 MultiButton 实现 |
+| `App/kb/` | USB 键盘报告与运行时键值 |
 | `Core/` | CubeMX 生成的外设初始化、中断代码，以及暂时保留原位置的 touch 模块 |
 | `Drivers/` | STM32 HAL 与 CMSIS |
 | `tinyusb/` | TinyUSB 协议栈 |
@@ -180,9 +181,8 @@ python tools/magic_config_tool.py
 | `ref/Mai2LED/` | Mai2LED 协议和参考实现 |
 | `ref/Mai2Touch/` | Mai2Touch 协议和参考实现 |
 | `ref/Touch_Algorithm/` | PSoC 数据格式、通道映射和触摸算法参考 |
-| `MIGRATION.md` | 分支历史、迁移说明和开发约束 |
 
-为避免影响并行 PR，touch 当前仍保留在 `Core/Src/touch/`，其文件结构和实现不在本次分类中调整。
+为避免影响并行 PR，touch 当前仍保留在 `Core/Src/touch/`，其文件结构和实现不调整；`App/config/touch_config.*` 仅为空占位，不引用或注册 touch。
 
 ## 许可证
 

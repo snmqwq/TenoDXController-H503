@@ -38,9 +38,6 @@ void mai2led_app_set_rainbow_mode(bool enabled);
 bool mai2led_app_get_rainbow_mode(void);
 void mai2led_app_reset_light_config(void);
 
-bool mai2led_app_load_config_from_flash(void);
-bool mai2led_app_save_config_to_flash(void);
-
 #ifdef __cplusplus
 }
 #endif

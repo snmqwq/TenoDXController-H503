@@ -21,7 +21,9 @@ static uint8_t page_buffer[FLASH_CONFIG_AREA_SIZE] __attribute__((aligned(16)));
 
 static bool slot_is_valid(flash_config_slot_t slot)
 {
-    return (uint32_t)slot < (uint32_t)FLASH_CONFIG_SLOT_COUNT;
+    return (slot == FLASH_CONFIG_SLOT_TOUCH) ||
+           (slot == FLASH_CONFIG_SLOT_LIGHT) ||
+           (slot == FLASH_CONFIG_SLOT_KEYBOARD);
 }
 
 uint32_t flash_config_slot_address(flash_config_slot_t slot)

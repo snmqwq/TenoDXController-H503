@@ -82,7 +82,12 @@
 					<sourceEntries>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="App"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="I-CUBE-WS28XX"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb"/>
+						<entry excluding="class|common|device|host|osal|portable|typec" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/common"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/device"/>
+						<entry excluding="cdc_host.c|cdc_rndis_host.c|serial" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/class/cdc"/>
+						<entry excluding="hid_host.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/class/hid"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/portable/st/stm32_fsdev"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers"/>
@@ -168,7 +173,12 @@
 					<sourceEntries>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="App"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="I-CUBE-WS28XX"/>
-						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb"/>
+						<entry excluding="class|common|device|host|osal|portable|typec" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/common"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/device"/>
+						<entry excluding="cdc_host.c|cdc_rndis_host.c|serial" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/class/cdc"/>
+						<entry excluding="hid_host.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/class/hid"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="tinyusb/portable/st/stm32_fsdev"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Middlewares"/>
 						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers"/>
