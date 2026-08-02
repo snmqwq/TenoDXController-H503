@@ -2,6 +2,7 @@
 
 #include "main.h"
 
+#define STATUS_LED_APP_INITIALIZING_MS           1000U
 #define STATUS_LED_APP_RUNNING_PERIOD_MS         1000U
 #define STATUS_LED_APP_RUNNING_ON_MS              100U
 #define STATUS_LED_APP_CONFIG_PHASE_MS             80U
@@ -16,8 +17,11 @@ typedef enum
 } status_led_app_state_t;
 
 static status_led_app_state_t status_led_state = STATUS_LED_APP_STATE_INITIALIZING;
+static uint32_t status_led_initializing_started_tick;
 static uint32_t status_led_phase_started_tick;
 static bool status_led_config_write_complete;
+static bool status_led_application_ready;
+static bool status_led_initialized;
 static bool status_led_output_valid;
 static bool status_led_output_on;
 
@@ -69,6 +73,27 @@ static void status_led_app_enter_running(uint32_t now, bool pulse_now)
     }
 }
 
+static bool status_led_app_initializing_elapsed(uint32_t now)
+{
+    return (uint32_t)(now - status_led_initializing_started_tick) >=
+           STATUS_LED_APP_INITIALIZING_MS;
+}
+
+static void status_led_app_resume(uint32_t now)
+{
+    status_led_config_write_complete = false;
+
+    if (status_led_application_ready && status_led_app_initializing_elapsed(now))
+    {
+        status_led_app_enter_running(now, false);
+    }
+    else
+    {
+        status_led_state = STATUS_LED_APP_STATE_INITIALIZING;
+        status_led_app_write(true);
+    }
+}
+
 void status_led_app_init(void)
 {
     if (status_led_state == STATUS_LED_APP_STATE_ERROR)
@@ -78,9 +103,17 @@ void status_led_app_init(void)
     }
 
     status_led_app_configure_output(true);
-    status_led_state = STATUS_LED_APP_STATE_INITIALIZING;
-    status_led_phase_started_tick = HAL_GetTick();
-    status_led_config_write_complete = false;
+    if (!status_led_initialized)
+    {
+        uint32_t now = HAL_GetTick();
+
+        status_led_state = STATUS_LED_APP_STATE_INITIALIZING;
+        status_led_initializing_started_tick = now;
+        status_led_phase_started_tick = now;
+        status_led_config_write_complete = false;
+        status_led_application_ready = false;
+        status_led_initialized = true;
+    }
 }
 
 void status_led_app_task(void)
@@ -91,6 +124,13 @@ void status_led_app_task(void)
     switch (status_led_state)
     {
         case STATUS_LED_APP_STATE_INITIALIZING:
+            status_led_app_write(true);
+            if (status_led_application_ready && status_led_app_initializing_elapsed(now))
+            {
+                status_led_app_enter_running(now, false);
+            }
+            break;
+
         case STATUS_LED_APP_STATE_ERROR:
             status_led_app_write(true);
             break;
@@ -110,7 +150,7 @@ void status_led_app_task(void)
             if (status_led_config_write_complete &&
                 (elapsed >= STATUS_LED_APP_CONFIG_FEEDBACK_MS))
             {
-                status_led_app_enter_running(now, false);
+                status_led_app_resume(now);
                 break;
             }
 
@@ -127,7 +167,13 @@ void status_led_app_set_running(void)
 {
     if (status_led_state != STATUS_LED_APP_STATE_ERROR)
     {
-        status_led_app_enter_running(HAL_GetTick(), true);
+        uint32_t now = HAL_GetTick();
+
+        status_led_application_ready = true;
+        if (status_led_app_initializing_elapsed(now))
+        {
+            status_led_app_enter_running(now, false);
+        }
     }
 }
 
@@ -167,5 +213,6 @@ void status_led_app_set_error(void)
 {
     status_led_state = STATUS_LED_APP_STATE_ERROR;
     status_led_config_write_complete = false;
+    status_led_initialized = true;
     status_led_app_configure_output(true);
 }
