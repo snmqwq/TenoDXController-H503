@@ -7,6 +7,7 @@
 #include "config/config_app.h"
 #include "kb/keyboard_app.h"
 #include "led/mai2led_app.h"
+#include "status/status_led_app.h"
 #include "cdc_manager.h"
 #include "mai2touch.h"
 #include "tenodata.h"
@@ -52,11 +53,15 @@ static bool app_set_pixels_rgb(WS28XX_HandleTypeDef *led,
 
 void app_init(void)
 {
-    WS28XX_Init(&led_handle,
-                 &htim3,
-                 250U,
-                 TIM_CHANNEL_3,
-                 MAI2LED_APP_MAX_LED_TOTAL);
+    bool init_ok;
+
+    status_led_app_init();
+
+    init_ok = WS28XX_Init(&led_handle,
+                          &htim3,
+                          250U,
+                          TIM_CHANNEL_3,
+                          MAI2LED_APP_MAX_LED_TOTAL);
 
     if (led_handle.MaxPixel > 0U)
     {
@@ -69,7 +74,7 @@ void app_init(void)
         WS28XX_Update(&led_handle);
     }
 
-    tusb_init();
+    init_ok = tusb_init() && init_ok;
     cdc_manager_init();
     aime_reader_app_init();
     tenodata_init();
@@ -86,11 +91,21 @@ void app_init(void)
         .led_per_bit = MAI2LED_APP_DEFAULT_LED_PER_BIT,
         .button_read = button_app_read_main_mask8
     });
-    (void)config_app_init();
+    init_ok = config_app_init() && init_ok;
+
+    if (init_ok)
+    {
+        status_led_app_set_running();
+    }
+    else
+    {
+        status_led_app_set_error();
+    }
 }
 
 void app_task(void)
 {
+    status_led_app_task();
     tud_task();
     aime_reader_app_task();
     tenodata_task();

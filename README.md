@@ -41,6 +41,15 @@ USB 标识为 VID `0xCAFE`、PID `0x4313`，产品名为 `TenoDX Controller`。
 
 键盘以 12KRO 自定义 HID 报告发送。长按 BTN8 约 5 秒会恢复空闲灯效；一次按住只触发一次，松开后才可再次触发。
 
+## 状态灯
+
+PC13 状态灯为高电平点亮，状态只表示固件运行情况，不区分 1P/2P 布局：
+
+- 初始化期间常亮。
+- 正常运行时每秒心跳一次（亮 100 ms、灭 900 ms）。
+- `SAVE` / `SAVE_ALL` 成功写入 Flash 后快速闪烁 3 次（每相位 80 ms）。
+- 配置保存失败或进入致命错误时锁定常亮。
+
 ## 灯光
 
 - 只控制 8 个逻辑按钮灯。
@@ -188,6 +197,7 @@ keyboard save
 | `App/led/` | Mai2LED 控制 |
 | `App/button/` | 按键扫描接口及内部第三方 MultiButton 实现 |
 | `App/kb/` | USB 键盘报告与运行时键值 |
+| `App/status/` | PC13 运行状态灯状态机与错误指示 |
 | `Core/` | CubeMX 生成的外设初始化、中断代码，以及暂时保留原位置的 touch 模块 |
 | `Drivers/` | STM32 HAL 与 CMSIS |
 | `tinyusb/` | TinyUSB 协议栈 |

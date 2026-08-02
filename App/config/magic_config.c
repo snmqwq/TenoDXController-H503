@@ -1,6 +1,7 @@
 #include "magic_config.h"
 
 #include "main.h"
+#include "status/status_led_app.h"
 #include "usb.h"
 #include <stddef.h>
 #include <string.h>
@@ -210,6 +211,8 @@ static uint8_t handle_global_command(uint8_t cmd,
                                      uint8_t response_max,
                                      uint8_t *response_length)
 {
+    uint8_t save_status;
+
     if (response_length != NULL)
     {
         *response_length = 0U;
@@ -243,7 +246,10 @@ static uint8_t handle_global_command(uint8_t cmd,
                 return MAGIC_CONFIG_STATUS_PARAM_ERROR;
             }
 
-            return handle_global_save_all();
+            status_led_app_config_write_begin();
+            save_status = handle_global_save_all();
+            status_led_app_config_write_end(save_status == MAGIC_CONFIG_STATUS_OK);
+            return save_status;
 
         case MAGIC_CONFIG_CMD_ENTER_DFU:
             if ((payload == NULL) ||
@@ -272,6 +278,7 @@ uint8_t magic_config_handle(uint8_t module,
                             uint8_t *response_length)
 {
     magic_config_module_t const *handler;
+    bool save_ok;
 
     if (response_length != NULL)
     {
@@ -322,7 +329,10 @@ uint8_t magic_config_handle(uint8_t module,
                 return MAGIC_CONFIG_STATUS_CMD_ERROR;
             }
 
-            return handler->save(param) ? MAGIC_CONFIG_STATUS_OK : MAGIC_CONFIG_STATUS_IO_ERROR;
+            status_led_app_config_write_begin();
+            save_ok = handler->save(param);
+            status_led_app_config_write_end(save_ok);
+            return save_ok ? MAGIC_CONFIG_STATUS_OK : MAGIC_CONFIG_STATUS_IO_ERROR;
 
         case MAGIC_CONFIG_CMD_LOAD_DEFAULT:
             if (handler->load_default == NULL)

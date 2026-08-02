@@ -28,6 +28,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "app.h"
+#include "status/status_led_app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -78,6 +79,7 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
+  status_led_app_init();
 
   /* USER CODE END Init */
 
@@ -183,6 +185,7 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
+  status_led_app_set_error();
   __disable_irq();
   while (1)
   {
