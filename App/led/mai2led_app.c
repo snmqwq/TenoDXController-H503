@@ -12,6 +12,8 @@
 #define IDLE_RAINBOW_DIM_VALUE         128U
 #define IDLE_RAINBOW_PRESS_SATURATION  64U
 #define IDLE_RAINBOW_PRESS_VALUE       255U
+#define LED_TX_TIMEOUT_MS               5U
+#define LED_RESET_LATCH_MS              1U
 
 #define MAI2LED_DUMMY_EEPROM_SIZE      8U
 
@@ -22,24 +24,74 @@ typedef struct
     uint8_t b;
 } RGB_t;
 
+typedef enum
+{
+    LED_TX_STATE_IDLE = 0,
+    LED_TX_STATE_ACTIVE,
+    LED_TX_STATE_LATCH_WAIT
+} led_tx_state_t;
+
+typedef enum
+{
+    LED_TX_KIND_NONE = 0,
+    LED_TX_KIND_NORMAL,
+    LED_TX_KIND_COUNT_CLEAR
+} led_tx_kind_t;
+
+typedef enum
+{
+    LED_FRAME_KIND_NONE = 0,
+    LED_FRAME_KIND_NORMAL,
+    LED_FRAME_KIND_IDLE,
+    LED_FRAME_KIND_FADE_START,
+    LED_FRAME_KIND_FADE_STEP,
+    LED_FRAME_KIND_FADE_FINAL
+} led_frame_kind_t;
+
+typedef enum
+{
+    LED_FADE_STATE_IDLE = 0,
+    LED_FADE_STATE_ARMED,
+    LED_FADE_STATE_START_PENDING,
+    LED_FADE_STATE_RUNNING,
+    LED_FADE_STATE_FINAL_PENDING
+} led_fade_state_t;
+
 typedef struct
 {
     mai2led_app_config_t config;
     PacketReq req;
     PacketAck ack;
     uint8_t dummy_eeprom[MAI2LED_DUMMY_EEPROM_SIZE];
-    uint32_t fade_start_time;
-    uint32_t fade_end_time;
-    uint8_t fade_start_led;
-    uint8_t fade_end_led;
+    RGB_t staging_frame[MAI2LED_APP_DATA_BITS];
+    RGB_t output_frame[MAI2LED_APP_DATA_BITS];
+    RGB_t active_frame[MAI2LED_APP_DATA_BITS];
+    RGB_t displayed_frame[MAI2LED_APP_DATA_BITS];
+    uint32_t fade_started_tick;
+    uint32_t fade_duration_ms;
+    uint32_t fade_generation;
+    uint32_t pending_frame_generation;
+    uint32_t active_frame_generation;
+    uint32_t tx_started_tick;
+    uint32_t tx_latch_started_tick;
+    uint8_t fade_start_logic;
+    uint8_t fade_end_logic;
     uint8_t fade_progress;
+    uint8_t configured_led_per_bit;
+    uint8_t active_led_per_bit;
     RGB_t fade_start_color;
     RGB_t fade_end_color;
     RGB_t fade_now_color;
     uint32_t last_idle_update_tick;
     uint16_t idle_rainbow_loop;
-    bool need_fade;
-    bool fade_start;
+    led_tx_state_t tx_state;
+    led_tx_kind_t active_tx_kind;
+    led_frame_kind_t pending_frame_kind;
+    led_frame_kind_t active_frame_kind;
+    led_fade_state_t fade_state;
+    uint8_t staging_dirty_mask;
+    bool normal_frame_dirty;
+    bool count_clear_pending;
     bool idle_lights_enabled;
     bool idle_lights_dirty;
     bool rainbow_mode_enabled;
@@ -47,58 +99,51 @@ typedef struct
 } mai2led_app_t;
 
 static mai2led_app_t app;
+static volatile bool led_tx_complete_event;
+static volatile bool led_tx_error_event;
 
-static bool set_pixels_rgb(WS28XX_HandleTypeDef *led,
+static bool set_pixels_rgb(RGB_t *pixels,
                            uint16_t start_pixel,
                            uint16_t end_pixel,
                            uint8_t red,
                            uint8_t green,
                            uint8_t blue)
 {
-    if ((led == NULL) || (start_pixel > end_pixel) || (end_pixel >= led->MaxPixel))
+    if ((pixels == NULL) ||
+        (start_pixel > end_pixel) ||
+        (end_pixel >= MAI2LED_APP_DATA_BITS))
     {
         return false;
     }
 
     for (uint16_t pixel = start_pixel; pixel <= end_pixel; pixel++)
     {
-        if (!WS28XX_SetPixel_RGB(led, pixel, red, green, blue))
-        {
-            return false;
-        }
+        pixels[pixel].r = red;
+        pixels[pixel].g = green;
+        pixels[pixel].b = blue;
     }
 
     return true;
-}
-
-static int32_t map_int32(int32_t x,
-                         int32_t in_min,
-                         int32_t in_max,
-                         int32_t out_min,
-                         int32_t out_max)
-{
-    if (in_max == in_min)
-    {
-        return out_min;
-    }
-
-    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
 static RGB_t rgb_blend(RGB_t c1, RGB_t c2, uint8_t amount)
 {
     RGB_t out;
 
-    out.r = ((uint16_t)c1.r * (255U - amount) + (uint16_t)c2.r * amount) / 255U;
-    out.g = ((uint16_t)c1.g * (255U - amount) + (uint16_t)c2.g * amount) / 255U;
-    out.b = ((uint16_t)c1.b * (255U - amount) + (uint16_t)c2.b * amount) / 255U;
+    out.r = (uint8_t)(((uint16_t)c1.r * (255U - amount) +
+                       (uint16_t)c2.r * amount) / 255U);
+    out.g = (uint8_t)(((uint16_t)c1.g * (255U - amount) +
+                       (uint16_t)c2.g * amount) / 255U);
+    out.b = (uint8_t)(((uint16_t)c1.b * (255U - amount) +
+                       (uint16_t)c2.b * amount) / 255U);
 
     return out;
 }
 
 bool mai2led_app_is_led_per_bit_valid(uint8_t led_per_bit)
 {
-    if (led_per_bit == 0U)
+    if ((led_per_bit == 0U) ||
+        (led_per_bit > MAI2LED_APP_MAX_LED_PER_BIT))
     {
         return false;
     }
@@ -221,53 +266,430 @@ static void ack_init(uint8_t length, uint8_t status, uint8_t report)
     app.ack.report = report;
 }
 
-static void logic_to_physical(uint8_t start_logic,
-                              uint8_t end_logic,
-                              uint8_t *start_phy,
-                              uint8_t *end_phy)
+static void clear_logical_frame(RGB_t *frame)
 {
-    uint8_t led_per_bit = mai2led_app_get_led_per_bit();
+    if (frame != NULL)
+    {
+        memset(frame, 0, sizeof(RGB_t) * MAI2LED_APP_DATA_BITS);
+    }
+}
 
-    if ((start_phy == NULL) || (end_phy == NULL))
+static bool led_frame_kind_is_fade(led_frame_kind_t kind)
+{
+    return (kind == LED_FRAME_KIND_FADE_START) ||
+           (kind == LED_FRAME_KIND_FADE_STEP) ||
+           (kind == LED_FRAME_KIND_FADE_FINAL);
+}
+
+static void queue_output_frame(led_frame_kind_t kind)
+{
+    app.normal_frame_dirty = true;
+    app.pending_frame_kind = kind;
+    app.pending_frame_generation = led_frame_kind_is_fade(kind) ?
+                                   app.fade_generation : 0U;
+}
+
+static void commit_staging_frame(led_frame_kind_t kind)
+{
+    memcpy(app.output_frame,
+           app.staging_frame,
+           sizeof(app.output_frame));
+    app.staging_dirty_mask = 0U;
+    queue_output_frame(kind);
+}
+
+static void sync_unstaged_pixels_from(RGB_t const *frame)
+{
+    if (frame == NULL)
     {
         return;
     }
 
-    if (led_per_bit == 0)
+    for (uint8_t logical = 0U;
+         logical < MAI2LED_APP_DATA_BITS;
+         logical++)
     {
-        led_per_bit = 1;
+        if ((app.staging_dirty_mask & (uint8_t)(1U << logical)) == 0U)
+        {
+            app.staging_frame[logical] = frame[logical];
+        }
     }
-
-    if (start_logic >= MAI2LED_APP_DATA_BITS)
-    {
-        start_logic = MAI2LED_APP_DATA_BITS - 1U;
-    }
-
-    if (end_logic >= MAI2LED_APP_DATA_BITS)
-    {
-        end_logic = MAI2LED_APP_DATA_BITS - 1U;
-    }
-
-    if (start_logic > end_logic)
-    {
-        uint8_t temp = start_logic;
-        start_logic = end_logic;
-        end_logic = temp;
-    }
-
-    *start_phy = start_logic * led_per_bit;
-    *end_phy = ((uint8_t)(end_logic + 1U) * led_per_bit) - 1U;
 }
 
-static void clear_button_lights(void);
-static bool led_flush(void);
+static void restore_displayed_output(void)
+{
+    memcpy(app.output_frame,
+           app.displayed_frame,
+           sizeof(app.output_frame));
+    sync_unstaged_pixels_from(app.displayed_frame);
+}
+
+static void cancel_fade(void)
+{
+    app.fade_generation++;
+    app.fade_state = LED_FADE_STATE_IDLE;
+
+    if (app.normal_frame_dirty &&
+        led_frame_kind_is_fade(app.pending_frame_kind))
+    {
+        app.normal_frame_dirty = false;
+        app.pending_frame_kind = LED_FRAME_KIND_NONE;
+        app.pending_frame_generation = 0U;
+        restore_displayed_output();
+    }
+}
+
+static DMA_HandleTypeDef *led_transport_dma_handle(void)
+{
+    WS28XX_HandleTypeDef const *led = app.config.led;
+
+    if ((led == NULL) || (led->hTim == NULL))
+    {
+        return NULL;
+    }
+
+    switch (led->Channel)
+    {
+        case TIM_CHANNEL_1:
+            return led->hTim->hdma[TIM_DMA_ID_CC1];
+
+        case TIM_CHANNEL_2:
+            return led->hTim->hdma[TIM_DMA_ID_CC2];
+
+        case TIM_CHANNEL_3:
+            return led->hTim->hdma[TIM_DMA_ID_CC3];
+
+        case TIM_CHANNEL_4:
+            return led->hTim->hdma[TIM_DMA_ID_CC4];
+
+        default:
+            return NULL;
+    }
+}
+
+static bool led_transport_channel_ready(void)
+{
+    WS28XX_HandleTypeDef const *led = app.config.led;
+    DMA_HandleTypeDef const *dma = led_transport_dma_handle();
+
+    if ((led == NULL) || (led->hTim == NULL) || (dma == NULL))
+    {
+        return false;
+    }
+
+    return (HAL_TIM_GetChannelState(led->hTim, led->Channel) ==
+            HAL_TIM_CHANNEL_STATE_READY) &&
+           (HAL_DMA_GetState(dma) == HAL_DMA_STATE_READY);
+}
+
+static bool led_transport_render_frame(led_tx_kind_t kind)
+{
+    WS28XX_HandleTypeDef *led = app.config.led;
+    uint16_t active_total;
+
+    if ((led == NULL) ||
+        (led->MaxPixel == 0U) ||
+        (led->MaxPixel > MAI2LED_APP_MAX_LED_TOTAL))
+    {
+        return false;
+    }
+
+    active_total = (uint16_t)app.active_led_per_bit *
+                   MAI2LED_APP_DATA_BITS;
+
+    for (uint16_t pixel = 0U; pixel < led->MaxPixel; pixel++)
+    {
+        RGB_t color = {0U, 0U, 0U};
+
+        if ((kind == LED_TX_KIND_NORMAL) &&
+            (app.active_led_per_bit > 0U) &&
+            (pixel < active_total))
+        {
+            uint8_t logical = (uint8_t)(pixel / app.active_led_per_bit);
+
+            color = app.active_frame[logical];
+        }
+
+        if (!WS28XX_SetPixel_RGB(led,
+                                 pixel,
+                                 color.r,
+                                 color.g,
+                                 color.b))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void led_transport_take_events(bool *complete, bool *error)
+{
+    uint32_t primask;
+
+    if ((complete == NULL) || (error == NULL))
+    {
+        return;
+    }
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    *complete = led_tx_complete_event;
+    *error = led_tx_error_event;
+    led_tx_complete_event = false;
+    led_tx_error_event = false;
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
+}
+
+static bool led_frame_can_retry(led_frame_kind_t kind,
+                                uint32_t generation)
+{
+    if (kind == LED_FRAME_KIND_NORMAL)
+    {
+        return true;
+    }
+
+    if (kind == LED_FRAME_KIND_IDLE)
+    {
+        return app.idle_lights_enabled;
+    }
+
+    if (!led_frame_kind_is_fade(kind) ||
+        (generation != app.fade_generation))
+    {
+        return false;
+    }
+
+    switch (kind)
+    {
+        case LED_FRAME_KIND_FADE_START:
+            return app.fade_state == LED_FADE_STATE_START_PENDING;
+
+        case LED_FRAME_KIND_FADE_STEP:
+            return app.fade_state == LED_FADE_STATE_RUNNING;
+
+        case LED_FRAME_KIND_FADE_FINAL:
+            return app.fade_state == LED_FADE_STATE_FINAL_PENDING;
+
+        default:
+            return false;
+    }
+}
+
+static void led_transport_enter_latch_wait(uint32_t now, bool success)
+{
+    if (!success)
+    {
+        if ((app.active_tx_kind == LED_TX_KIND_NORMAL) &&
+            !app.normal_frame_dirty)
+        {
+            if (led_frame_can_retry(app.active_frame_kind,
+                                    app.active_frame_generation))
+            {
+                memcpy(app.output_frame,
+                       app.active_frame,
+                       sizeof(app.output_frame));
+                app.normal_frame_dirty = true;
+                app.pending_frame_kind = app.active_frame_kind;
+                app.pending_frame_generation =
+                    app.active_frame_generation;
+            }
+            else if (led_frame_kind_is_fade(app.active_frame_kind) &&
+                     (app.active_frame_generation != app.fade_generation))
+            {
+                restore_displayed_output();
+            }
+        }
+
+        app.active_tx_kind = LED_TX_KIND_NONE;
+        app.active_frame_kind = LED_FRAME_KIND_NONE;
+        app.active_frame_generation = 0U;
+    }
+
+    app.tx_state = LED_TX_STATE_LATCH_WAIT;
+    app.tx_latch_started_tick = now;
+}
+
+static void led_transport_start_frame(uint32_t now)
+{
+    WS28XX_HandleTypeDef *led = app.config.led;
+    led_tx_kind_t kind;
+
+    if (!led_transport_channel_ready())
+    {
+        return;
+    }
+
+    if (app.count_clear_pending)
+    {
+        kind = LED_TX_KIND_COUNT_CLEAR;
+    }
+    else if (app.normal_frame_dirty)
+    {
+        kind = LED_TX_KIND_NORMAL;
+    }
+    else
+    {
+        return;
+    }
+
+    if (kind == LED_TX_KIND_NORMAL)
+    {
+        memcpy(app.active_frame,
+               app.output_frame,
+               sizeof(app.active_frame));
+        app.active_frame_kind = app.pending_frame_kind;
+        app.active_frame_generation = app.pending_frame_generation;
+    }
+    else
+    {
+        app.active_frame_kind = LED_FRAME_KIND_NONE;
+        app.active_frame_generation = 0U;
+    }
+
+    if (!led_transport_render_frame(kind) || !WS28XX_Update(led))
+    {
+        (void)HAL_TIM_PWM_Stop_DMA(led->hTim, led->Channel);
+        app.active_tx_kind = LED_TX_KIND_NONE;
+        app.active_frame_kind = LED_FRAME_KIND_NONE;
+        app.active_frame_generation = 0U;
+        app.tx_state = LED_TX_STATE_LATCH_WAIT;
+        app.tx_latch_started_tick = now;
+        return;
+    }
+
+    app.active_tx_kind = kind;
+    app.tx_state = LED_TX_STATE_ACTIVE;
+    app.tx_started_tick = now;
+    if (kind == LED_TX_KIND_NORMAL)
+    {
+        app.normal_frame_dirty = false;
+        app.pending_frame_kind = LED_FRAME_KIND_NONE;
+        app.pending_frame_generation = 0U;
+    }
+}
+
+static void led_transport_finish_normal_frame(uint32_t now)
+{
+    memcpy(app.displayed_frame,
+           app.active_frame,
+           sizeof(app.displayed_frame));
+
+    if (!app.normal_frame_dirty &&
+        ((app.active_frame_kind != LED_FRAME_KIND_IDLE) ||
+         app.idle_lights_enabled))
+    {
+        memcpy(app.output_frame,
+               app.active_frame,
+               sizeof(app.output_frame));
+        sync_unstaged_pixels_from(app.active_frame);
+    }
+
+    if (app.active_frame_generation != app.fade_generation)
+    {
+        return;
+    }
+
+    if ((app.active_frame_kind == LED_FRAME_KIND_FADE_START) &&
+        (app.fade_state == LED_FADE_STATE_START_PENDING) &&
+        !(app.normal_frame_dirty &&
+          (app.pending_frame_kind == LED_FRAME_KIND_FADE_START) &&
+          (app.pending_frame_generation == app.fade_generation)))
+    {
+        app.fade_started_tick = now;
+        app.fade_progress = 0U;
+        app.fade_state = LED_FADE_STATE_RUNNING;
+    }
+    else if ((app.active_frame_kind == LED_FRAME_KIND_FADE_FINAL) &&
+             (app.fade_state == LED_FADE_STATE_FINAL_PENDING))
+    {
+        app.fade_state = LED_FADE_STATE_IDLE;
+    }
+}
+
+static void led_transport_task(void)
+{
+    WS28XX_HandleTypeDef *led = app.config.led;
+    uint32_t now = HAL_GetTick();
+    bool complete = false;
+    bool error = false;
+
+    led_transport_take_events(&complete, &error);
+
+    if ((led == NULL) || (led->hTim == NULL))
+    {
+        return;
+    }
+
+    if (app.tx_state == LED_TX_STATE_ACTIVE)
+    {
+        if (error)
+        {
+            led_transport_enter_latch_wait(now, false);
+        }
+        else if (complete)
+        {
+            led_transport_enter_latch_wait(now, true);
+        }
+        else if ((uint32_t)(now - app.tx_started_tick) >=
+                 LED_TX_TIMEOUT_MS)
+        {
+            (void)HAL_TIM_PWM_Stop_DMA(led->hTim, led->Channel);
+            led_transport_enter_latch_wait(now, false);
+        }
+    }
+
+    if ((app.tx_state == LED_TX_STATE_LATCH_WAIT) &&
+        ((uint32_t)(now - app.tx_latch_started_tick) >=
+         LED_RESET_LATCH_MS))
+    {
+        if (app.active_tx_kind == LED_TX_KIND_NORMAL)
+        {
+            led_transport_finish_normal_frame(now);
+        }
+        else if (app.active_tx_kind == LED_TX_KIND_COUNT_CLEAR)
+        {
+            app.active_led_per_bit = app.configured_led_per_bit;
+            app.count_clear_pending = false;
+            if (app.idle_lights_enabled)
+            {
+                app.normal_frame_dirty = false;
+                app.pending_frame_kind = LED_FRAME_KIND_NONE;
+                app.pending_frame_generation = 0U;
+                app.idle_lights_dirty = true;
+                app.last_idle_update_tick = now;
+            }
+            else if (!app.normal_frame_dirty)
+            {
+                queue_output_frame(LED_FRAME_KIND_NORMAL);
+            }
+        }
+
+        app.active_tx_kind = LED_TX_KIND_NONE;
+        app.active_frame_kind = LED_FRAME_KIND_NONE;
+        app.active_frame_generation = 0U;
+        app.tx_state = LED_TX_STATE_IDLE;
+    }
+
+    if (app.tx_state == LED_TX_STATE_IDLE)
+    {
+        led_transport_start_frame(now);
+    }
+}
 
 void mai2led_app_mark_io_active(void)
 {
     if (app.idle_lights_enabled)
     {
-        clear_button_lights();
-        led_flush();
+        clear_logical_frame(app.staging_frame);
+        clear_logical_frame(app.output_frame);
+        app.staging_dirty_mask = 0U;
+        app.normal_frame_dirty = false;
+        app.pending_frame_kind = LED_FRAME_KIND_NONE;
+        app.pending_frame_generation = 0U;
     }
 
     app.idle_lights_enabled = false;
@@ -281,6 +703,7 @@ bool mai2led_app_io_is_active(void)
 
 void mai2led_app_restore_idle_lights(void)
 {
+    cancel_fade();
     app.idle_lights_enabled = true;
     app.idle_lights_dirty = true;
     app.last_idle_update_tick = HAL_GetTick() - IDLE_RAINBOW_UPDATE_MS;
@@ -288,16 +711,6 @@ void mai2led_app_restore_idle_lights(void)
 
 static bool aime_is_active(void)
 {
-    return false;
-}
-
-static bool led_flush(void)
-{
-    if (app.config.led != NULL)
-    {
-        return WS28XX_Update(app.config.led);
-    }
-
     return false;
 }
 
@@ -367,53 +780,28 @@ static uint32_t rgb_from_hsv(uint8_t h, uint8_t s, uint8_t v)
 
 static void set_button_rgb(uint8_t button_index, uint32_t color)
 {
-    uint8_t start_phy;
-    uint8_t end_phy;
     uint8_t red = (uint8_t)((color >> 16) & 0xffU);
     uint8_t green = (uint8_t)((color >> 8) & 0xffU);
     uint8_t blue = (uint8_t)(color & 0xffU);
 
-    if ((app.config.led == NULL) || (button_index >= MAI2LED_APP_DATA_BITS))
+    if (button_index >= MAI2LED_APP_DATA_BITS)
     {
         return;
     }
 
-    logic_to_physical(button_index, button_index, &start_phy, &end_phy);
-    set_pixels_rgb(app.config.led, start_phy, end_phy, red, green, blue);
-}
-
-static void clear_button_lights(void)
-{
-    if (app.config.led == NULL)
-    {
-        return;
-    }
-
-    if (app.config.led->MaxPixel > 0U)
-    {
-        set_pixels_rgb(app.config.led, 0, app.config.led->MaxPixel - 1U, 0, 0, 0);
-    }
+    app.staging_frame[button_index].r = red;
+    app.staging_frame[button_index].g = green;
+    app.staging_frame[button_index].b = blue;
 }
 
 static void set_idle_white_lights(void)
 {
-    uint16_t led_total;
-
-    if (app.config.led == NULL)
-    {
-        return;
-    }
-
-    led_total = mai2led_app_get_led_total();
-    if (led_total > app.config.led->MaxPixel)
-    {
-        led_total = app.config.led->MaxPixel;
-    }
-
-    if (led_total > 0U)
-    {
-        set_pixels_rgb(app.config.led, 0, led_total - 1U, 255, 255, 255);
-    }
+    (void)set_pixels_rgb(app.staging_frame,
+                         0U,
+                         MAI2LED_APP_DATA_BITS - 1U,
+                         255U,
+                         255U,
+                         255U);
 }
 
 static void update_button_rainbow(void)
@@ -449,7 +837,9 @@ static void update_idle_button_lights(void)
 {
     uint32_t now = HAL_GetTick();
 
-    if (!app.idle_lights_enabled || aime_is_active())
+    if (!app.idle_lights_enabled ||
+        app.count_clear_pending ||
+        aime_is_active())
     {
         return;
     }
@@ -466,24 +856,16 @@ static void update_idle_button_lights(void)
         if (app.idle_lights_dirty)
         {
             set_idle_white_lights();
-            if (led_flush())
-            {
-                app.idle_lights_dirty = false;
-            }
+            commit_staging_frame(LED_FRAME_KIND_IDLE);
+            app.idle_lights_dirty = false;
         }
 
         return;
     }
 
     update_button_rainbow();
-    if (led_flush())
-    {
-        app.idle_lights_dirty = false;
-    }
-    else
-    {
-        app.idle_lights_dirty = true;
-    }
+    commit_staging_frame(LED_FRAME_KIND_IDLE);
+    app.idle_lights_dirty = false;
 }
 
 static void begin_external_io_control(void)
@@ -493,67 +875,115 @@ static void begin_external_io_control(void)
 
 static void set_led_gs_8bit(void)
 {
-    uint8_t start_phy;
-    uint8_t end_phy;
-
-    logic_to_physical(app.req.index, app.req.index, &start_phy, &end_phy);
-    set_pixels_rgb(app.config.led, start_phy, end_phy, app.req.color[0], app.req.color[1], app.req.color[2]);
-    WS28XX_Update(app.config.led);
+    if (app.req.index < MAI2LED_APP_DATA_BITS)
+    {
+        app.staging_frame[app.req.index].r = app.req.color[0];
+        app.staging_frame[app.req.index].g = app.req.color[1];
+        app.staging_frame[app.req.index].b = app.req.color[2];
+        app.staging_dirty_mask |= (uint8_t)(1U << app.req.index);
+    }
 
     ack_init(0, AckStatus_Ok, AckReport_Ok);
 }
 
-static void set_led_gs_8bit_multi(void)
+static bool get_logic_range(uint8_t start,
+                            uint8_t end,
+                            uint8_t *range_start,
+                            uint8_t *range_end)
 {
-    if (app.req.end == 0x20U)
+    if ((range_start == NULL) || (range_end == NULL))
     {
-        app.req.end = (uint8_t)mai2led_app_get_led_total();
+        return false;
     }
 
-    logic_to_physical(app.req.start, app.req.end - 1U, &app.fade_start_led, &app.fade_end_led);
+    if (end == 0x20U)
+    {
+        end = MAI2LED_APP_DATA_BITS;
+    }
+
+    if ((start >= MAI2LED_APP_DATA_BITS) ||
+        (end > MAI2LED_APP_DATA_BITS) ||
+        (start >= end))
+    {
+        return false;
+    }
+
+    *range_start = start;
+    *range_end = end;
+    return true;
+}
+
+static void mark_staging_range_dirty(uint8_t start, uint8_t end)
+{
+    for (uint8_t logical = start; logical < end; logical++)
+    {
+        app.staging_dirty_mask |= (uint8_t)(1U << logical);
+    }
+}
+
+static void set_led_gs_8bit_multi(void)
+{
+    uint8_t range_start;
+    uint8_t range_end;
 
     app.fade_start_color.r = app.req.Multi_color[0];
     app.fade_start_color.g = app.req.Multi_color[1];
     app.fade_start_color.b = app.req.Multi_color[2];
 
-    set_pixels_rgb(app.config.led,
-                   app.fade_start_led,
-                   app.fade_end_led,
-                   app.fade_start_color.r,
-                   app.fade_start_color.g,
-                   app.fade_start_color.b);
+    if (get_logic_range(app.req.start,
+                        app.req.end,
+                        &range_start,
+                        &range_end))
+    {
+        (void)set_pixels_rgb(app.staging_frame,
+                             range_start,
+                             (uint16_t)(range_end - 1U),
+                             app.fade_start_color.r,
+                             app.fade_start_color.g,
+                             app.fade_start_color.b);
+        mark_staging_range_dirty(range_start, range_end);
+    }
 
-    app.need_fade = false;
-    app.fade_start = false;
+    cancel_fade();
     ack_init(0, AckStatus_Ok, AckReport_Ok);
 }
 
 static void set_led_gs_8bit_multi_fade(void)
 {
     uint8_t speed = (app.req.speed == 0U) ? 1U : app.req.speed;
+    uint8_t range_start;
+    uint8_t range_end;
 
     app.fade_end_color.r = app.req.Multi_color[0];
     app.fade_end_color.g = app.req.Multi_color[1];
     app.fade_end_color.b = app.req.Multi_color[2];
 
-    app.fade_start_time = HAL_GetTick();
-    app.fade_end_time = app.fade_start_time + (4095U / speed * 8U);
-
-    logic_to_physical(app.req.start, app.req.end - 1U, &app.fade_start_led, &app.fade_end_led);
-    app.need_fade = true;
+    cancel_fade();
+    if (get_logic_range(app.req.start,
+                        app.req.end,
+                        &range_start,
+                        &range_end))
+    {
+        app.fade_start_logic = range_start;
+        app.fade_end_logic = range_end;
+        app.fade_duration_ms = (4095U / speed) * 8U;
+        app.fade_state = LED_FADE_STATE_ARMED;
+    }
 
     ack_init(0, AckStatus_Ok, AckReport_Ok);
 }
 
 static void set_led_gs_update(void)
 {
-    if (!app.need_fade)
+    if (app.fade_state == LED_FADE_STATE_ARMED)
     {
-        WS28XX_Update(app.config.led);
+        app.fade_progress = 0U;
+        commit_staging_frame(LED_FRAME_KIND_FADE_START);
+        app.fade_state = LED_FADE_STATE_START_PENDING;
     }
-    else
+    else if (app.fade_state == LED_FADE_STATE_IDLE)
     {
-        app.fade_start = true;
+        commit_staging_frame(LED_FRAME_KIND_NORMAL);
     }
 
     ack_init(0, AckStatus_Ok, AckReport_Ok);
@@ -595,60 +1025,127 @@ static void get_protocol_version(void)
     ack_init(3, AckStatus_Ok, AckReport_Ok);
 }
 
+static bool fade_boundary_frame_pending(void)
+{
+    if (app.normal_frame_dirty)
+    {
+        if (app.pending_frame_kind == LED_FRAME_KIND_NORMAL)
+        {
+            return true;
+        }
+
+        if ((app.pending_frame_kind == LED_FRAME_KIND_FADE_START) &&
+            (app.pending_frame_generation == app.fade_generation))
+        {
+            return true;
+        }
+    }
+
+    if (app.active_tx_kind == LED_TX_KIND_NORMAL)
+    {
+        if (app.active_frame_kind == LED_FRAME_KIND_NORMAL)
+        {
+            return true;
+        }
+
+        if ((app.active_frame_kind == LED_FRAME_KIND_FADE_START) &&
+            (app.active_frame_generation == app.fade_generation))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static void fade_task(void)
 {
-    if (!app.need_fade || !app.fade_start)
+    uint32_t elapsed;
+    uint32_t now;
+
+    if ((app.fade_state != LED_FADE_STATE_RUNNING) ||
+        fade_boundary_frame_pending())
     {
         return;
     }
 
-    uint32_t now = HAL_GetTick();
+    now = HAL_GetTick();
+    elapsed = (uint32_t)(now - app.fade_started_tick);
 
-    if (now >= app.fade_end_time)
+    if ((app.fade_duration_ms == 0U) ||
+        (elapsed >= app.fade_duration_ms))
     {
-        app.need_fade = false;
-        app.fade_start = false;
-        app.fade_progress = 255;
+        app.fade_progress = 255U;
     }
     else
     {
-        app.fade_progress = (uint8_t)map_int32((int32_t)now,
-                                               (int32_t)app.fade_start_time,
-                                               (int32_t)app.fade_end_time,
-                                               0,
-                                               255);
+        app.fade_progress = (uint8_t)((elapsed * 255U) /
+                                      app.fade_duration_ms);
     }
 
-    app.fade_now_color = rgb_blend(app.fade_start_color, app.fade_end_color, app.fade_progress);
+    app.fade_now_color = rgb_blend(app.fade_start_color,
+                                   app.fade_end_color,
+                                   app.fade_progress);
 
-    set_pixels_rgb(app.config.led,
-                   app.fade_start_led,
-                   app.fade_end_led,
-                   app.fade_now_color.r,
-                   app.fade_now_color.g,
-                   app.fade_now_color.b);
-    WS28XX_Update(app.config.led);
+    (void)set_pixels_rgb(app.output_frame,
+                         app.fade_start_logic,
+                         (uint16_t)(app.fade_end_logic - 1U),
+                         app.fade_now_color.r,
+                         app.fade_now_color.g,
+                         app.fade_now_color.b);
+    for (uint8_t logical = app.fade_start_logic;
+         logical < app.fade_end_logic;
+         logical++)
+    {
+        if ((app.staging_dirty_mask & (uint8_t)(1U << logical)) == 0U)
+        {
+            app.staging_frame[logical] = app.fade_now_color;
+        }
+    }
+
+    if (app.fade_progress == 255U)
+    {
+        queue_output_frame(LED_FRAME_KIND_FADE_FINAL);
+        app.fade_state = LED_FADE_STATE_FINAL_PENDING;
+    }
+    else
+    {
+        queue_output_frame(LED_FRAME_KIND_FADE_STEP);
+    }
 }
 
 void mai2led_app_init(mai2led_app_config_t const *config)
 {
+    uint8_t initial_led_per_bit;
+    uint32_t now = HAL_GetTick();
+
     memset(&app, 0, sizeof(app));
+    led_tx_complete_event = false;
+    led_tx_error_event = false;
 
     if (config != NULL)
     {
         app.config = *config;
     }
 
-    if (app.config.led_per_bit == 0U)
+    initial_led_per_bit = app.config.led_per_bit;
+    if (!mai2led_app_is_led_per_bit_valid(initial_led_per_bit))
     {
-        app.config.led_per_bit = MAI2LED_APP_DEFAULT_LED_PER_BIT;
+        initial_led_per_bit = MAI2LED_APP_DEFAULT_LED_PER_BIT;
     }
 
+    app.config.led_per_bit = initial_led_per_bit;
+    app.configured_led_per_bit = initial_led_per_bit;
+    app.active_led_per_bit = initial_led_per_bit;
     app.idle_lights_enabled = true;
     app.idle_lights_dirty = true;
     app.rainbow_mode_enabled = false;
+    app.normal_frame_dirty = true;
+    app.pending_frame_kind = LED_FRAME_KIND_IDLE;
+    app.tx_state = LED_TX_STATE_LATCH_WAIT;
+    app.tx_latch_started_tick = now;
     app.initialized = true;
-    app.last_idle_update_tick = HAL_GetTick() - IDLE_RAINBOW_UPDATE_MS;
+    app.last_idle_update_tick = now - IDLE_RAINBOW_UPDATE_MS;
 }
 
 void mai2led_app_task(void)
@@ -744,23 +1241,45 @@ void mai2led_app_task(void)
     packet_write();
     fade_task();
     update_idle_button_lights();
+    led_transport_task();
 }
 
-void mai2led_app_set_led_per_bit(uint8_t led_per_bit)
+void mai2led_app_notify_tx_complete(void)
+{
+    led_tx_complete_event = true;
+}
+
+void mai2led_app_notify_tx_error(void)
+{
+    led_tx_error_event = true;
+}
+
+bool mai2led_app_set_led_per_bit(uint8_t led_per_bit)
 {
     if (!mai2led_app_is_led_per_bit_valid(led_per_bit))
     {
-        led_per_bit = MAI2LED_APP_DEFAULT_LED_PER_BIT;
+        return false;
     }
 
+    if (led_per_bit == mai2led_app_get_led_per_bit())
+    {
+        return true;
+    }
+
+    cancel_fade();
+    app.configured_led_per_bit = led_per_bit;
     app.config.led_per_bit = led_per_bit;
+    app.count_clear_pending = true;
     app.idle_lights_dirty = true;
-    app.last_idle_update_tick = HAL_GetTick() - IDLE_RAINBOW_UPDATE_MS;
+    app.last_idle_update_tick = HAL_GetTick();
+    return true;
 }
 
 uint8_t mai2led_app_get_led_per_bit(void)
 {
-    return (app.config.led_per_bit == 0U) ? MAI2LED_APP_DEFAULT_LED_PER_BIT : app.config.led_per_bit;
+    return (app.configured_led_per_bit == 0U) ?
+           MAI2LED_APP_DEFAULT_LED_PER_BIT :
+           app.configured_led_per_bit;
 }
 
 uint16_t mai2led_app_get_led_total(void)
@@ -780,8 +1299,13 @@ bool mai2led_app_get_rainbow_mode(void)
     return app.rainbow_mode_enabled;
 }
 
-void mai2led_app_reset_light_config(void)
+bool mai2led_app_reset_light_config(void)
 {
-    mai2led_app_set_led_per_bit(MAI2LED_APP_DEFAULT_LED_PER_BIT);
+    if (!mai2led_app_set_led_per_bit(MAI2LED_APP_DEFAULT_LED_PER_BIT))
+    {
+        return false;
+    }
+
     mai2led_app_set_rainbow_mode(false);
+    return true;
 }

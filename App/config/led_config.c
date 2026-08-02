@@ -57,9 +57,10 @@ static bool led_config_load_from_flash(void)
         return false;
     }
 
-    if (mai2led_app_is_led_per_bit_valid(config.led_per_bit))
+    if (!mai2led_app_is_led_per_bit_valid(config.led_per_bit) ||
+        !mai2led_app_set_led_per_bit(config.led_per_bit))
     {
-        mai2led_app_set_led_per_bit(config.led_per_bit);
+        return false;
     }
 
     mai2led_app_set_rainbow_mode(config.rainbow_mode_enable != 0U);
@@ -125,8 +126,7 @@ static bool light_magic_write(uint8_t param,
             {
                 return false;
             }
-            mai2led_app_set_led_per_bit(data[0]);
-            return true;
+            return mai2led_app_set_led_per_bit(data[0]);
 
         case LIGHT_PARAM_RAINBOW_ENABLE:
             mai2led_app_set_rainbow_mode(data[0] != 0U);
@@ -146,8 +146,7 @@ static bool light_magic_save(uint8_t param)
 static bool light_magic_load_default(uint8_t param)
 {
     (void)param;
-    mai2led_app_reset_light_config();
-    return true;
+    return mai2led_app_reset_light_config();
 }
 
 static bool light_magic_info(uint8_t param,
@@ -208,7 +207,11 @@ static bool light_magic_write_all(uint8_t const *data, uint8_t length)
         return false;
     }
 
-    mai2led_app_set_led_per_bit(payload.led_per_bit);
+    if (!mai2led_app_set_led_per_bit(payload.led_per_bit))
+    {
+        return false;
+    }
+
     mai2led_app_set_rainbow_mode(payload.rainbow_mode_enable != 0U);
     return true;
 }

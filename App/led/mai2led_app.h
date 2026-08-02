@@ -25,18 +25,20 @@ typedef struct
 
 void mai2led_app_init(mai2led_app_config_t const *config);
 void mai2led_app_task(void);
+void mai2led_app_notify_tx_complete(void);
+void mai2led_app_notify_tx_error(void);
 
 void mai2led_app_mark_io_active(void);
 bool mai2led_app_io_is_active(void);
 void mai2led_app_restore_idle_lights(void);
 
 bool mai2led_app_is_led_per_bit_valid(uint8_t led_per_bit);
-void mai2led_app_set_led_per_bit(uint8_t led_per_bit);
+bool mai2led_app_set_led_per_bit(uint8_t led_per_bit);
 uint8_t mai2led_app_get_led_per_bit(void);
 uint16_t mai2led_app_get_led_total(void);
 void mai2led_app_set_rainbow_mode(bool enabled);
 bool mai2led_app_get_rainbow_mode(void);
-void mai2led_app_reset_light_config(void);
+bool mai2led_app_reset_light_config(void);
 
 #ifdef __cplusplus
 }
