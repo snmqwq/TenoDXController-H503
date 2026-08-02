@@ -24,6 +24,8 @@ __pycache__/
 .venv/
 venv/
 tools/.venv/
+tools/test_tools/build/
+tools/test_tools/dist/
 
 # OS and editor noise
 .DS_Store
