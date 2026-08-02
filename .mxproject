@@ -3,25 +3,23 @@ LibFiles=Drivers\STM32H5xx_HAL_Driver\Inc\stm32h5xx_hal_cortex.h;Drivers\STM32H5
 
 [PreviousUsedCubeIDEFiles]
 SourceFiles=Core\Src\main.c;Core\Src\gpio.c;Core\Src\gpdma.c;Core\Src\i2c.c;Core\Src\tim.c;Core\Src\usart.c;Core\Src\usb.c;Core\Src\stm32h5xx_it.c;Core\Src\stm32h5xx_hal_msp.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_cortex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_rcc.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_rcc_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_flash.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_flash_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_gpio.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_dma.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_dma_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_pwr.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_pwr_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_exti.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_i2c.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_i2c_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_tim.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_tim_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_uart.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_uart_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_pcd.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_pcd_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_ll_usb.c;Drivers\CMSIS\Device\ST\STM32H5xx\Source\Templates\system_stm32h5xx.c;Core\Src\system_stm32h5xx.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_cortex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_rcc.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_rcc_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_flash.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_flash_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_gpio.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_dma.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_dma_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_pwr.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_pwr_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_exti.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_i2c.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_i2c_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_tim.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_tim_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_uart.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_uart_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_pcd.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_hal_pcd_ex.c;Drivers\STM32H5xx_HAL_Driver\Src\stm32h5xx_ll_usb.c;Drivers\CMSIS\Device\ST\STM32H5xx\Source\Templates\system_stm32h5xx.c;Core\Src\system_stm32h5xx.c;;;
-HeaderPath=Drivers\STM32H5xx_HAL_Driver\Inc;Drivers\STM32H5xx_HAL_Driver\Inc\Legacy;Drivers\CMSIS\Device\ST\STM32H5xx\Include;Drivers\CMSIS\Include;Middlewares\Third_Party\NimaLTD_Driver\WS28XX;Core\Inc;I-CUBE-WS28XX;
+HeaderPath=Drivers\STM32H5xx_HAL_Driver\Inc;Drivers\STM32H5xx_HAL_Driver\Inc\Legacy;Drivers\CMSIS\Device\ST\STM32H5xx\Include;Drivers\CMSIS\Include;Core\Inc;
 CDefines=USE_HAL_DRIVER;STM32H503xx;USE_HAL_DRIVER;USE_HAL_DRIVER;
 
 [PreviousGenFiles]
 AdvancedFolderStructure=true
-HeaderFileListSize=10
+HeaderFileListSize=9
 HeaderFiles#0=..\Core\Inc\gpio.h
 HeaderFiles#1=..\Core\Inc\gpdma.h
 HeaderFiles#2=..\Core\Inc\i2c.h
-HeaderFiles#3=..\I-CUBE-WS28XX\.\NimaLTD.I-CUBE-WS28XX_conf.h
-HeaderFiles#4=..\Core\Inc\tim.h
-HeaderFiles#5=..\Core\Inc\usart.h
-HeaderFiles#6=..\Core\Inc\usb.h
-HeaderFiles#7=..\Core\Inc\stm32h5xx_it.h
-HeaderFiles#8=..\Core\Inc\stm32h5xx_hal_conf.h
-HeaderFiles#9=..\Core\Inc\main.h
-HeaderFolderListSize=2
+HeaderFiles#3=..\Core\Inc\tim.h
+HeaderFiles#4=..\Core\Inc\usart.h
+HeaderFiles#5=..\Core\Inc\usb.h
+HeaderFiles#6=..\Core\Inc\stm32h5xx_it.h
+HeaderFiles#7=..\Core\Inc\stm32h5xx_hal_conf.h
+HeaderFiles#8=..\Core\Inc\main.h
+HeaderFolderListSize=1
 HeaderPath#0=..\Core\Inc
-HeaderPath#1=..\I-CUBE-WS28XX\.
 HeaderFiles=;
 SourceFileListSize=9
 SourceFiles#0=..\Core\Src\gpio.c
@@ -36,12 +34,4 @@ SourceFiles#8=..\Core\Src\main.c
 SourceFolderListSize=1
 SourcePath#0=..\Core\Src
 SourceFiles=;
-
-[ThirdPartyIp]
-ThirdPartyIpNumber=1
-ThirdPartyIpName#0=NimaLTD.I-CUBE-WS28XX.3.0.1
-
-[ThirdPartyIp#NimaLTD.I-CUBE-WS28XX.3.0.1]
-header=Middlewares\Third_Party\NimaLTD_Driver\WS28XX\ws28xx.h;
-source=Middlewares\Third_Party\NimaLTD_Driver\WS28XX\ws28xx.c;
 

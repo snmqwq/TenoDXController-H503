@@ -7,7 +7,8 @@ extern "C" {
 
 #include <stdbool.h>
 #include <stdint.h>
-#include "ws28xx.h"
+
+#include "led/ws2812b/ws2812b.h"
 
 #define MAI2LED_APP_CDC_ITF                 1U
 #define MAI2LED_APP_DATA_BITS               8U
@@ -18,7 +19,7 @@ extern "C" {
 
 typedef struct
 {
-    WS28XX_HandleTypeDef *led;
+    WS2812B_HandleTypeDef *led;
     uint8_t led_per_bit;
     uint16_t (*button_read)(void);
 } mai2led_app_config_t;

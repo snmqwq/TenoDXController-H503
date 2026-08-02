@@ -149,7 +149,8 @@ bool mai2led_app_is_led_per_bit_valid(uint8_t led_per_bit)
     }
 
     if ((app.config.led != NULL) &&
-        ((uint16_t)led_per_bit * MAI2LED_APP_DATA_BITS > app.config.led->MaxPixel))
+        ((uint16_t)led_per_bit * MAI2LED_APP_DATA_BITS >
+         WS2812B_GetPixelCount(app.config.led)))
     {
         return false;
     }
@@ -341,20 +342,21 @@ static void cancel_fade(void)
 
 static bool led_transport_channel_ready(void)
 {
-    WS28XX_HandleTypeDef const *led = app.config.led;
+    WS2812B_HandleTypeDef const *led = app.config.led;
 
     return (led != NULL) &&
-           (WS28XX_GetState(led) == WS28XX_STATE_IDLE);
+           (WS2812B_GetState(led) == WS2812B_STATE_IDLE);
 }
 
 static bool led_transport_render_frame(led_tx_kind_t kind)
 {
-    WS28XX_HandleTypeDef *led = app.config.led;
+    WS2812B_HandleTypeDef *led = app.config.led;
     uint16_t active_total;
+    uint16_t pixel_count = WS2812B_GetPixelCount(led);
 
     if ((led == NULL) ||
-        (led->MaxPixel == 0U) ||
-        (led->MaxPixel > MAI2LED_APP_MAX_LED_TOTAL))
+        (pixel_count == 0U) ||
+        (pixel_count > MAI2LED_APP_MAX_LED_TOTAL))
     {
         return false;
     }
@@ -362,7 +364,7 @@ static bool led_transport_render_frame(led_tx_kind_t kind)
     active_total = (uint16_t)app.active_led_per_bit *
                    MAI2LED_APP_DATA_BITS;
 
-    for (uint16_t pixel = 0U; pixel < led->MaxPixel; pixel++)
+    for (uint16_t pixel = 0U; pixel < pixel_count; pixel++)
     {
         RGB_t color = {0U, 0U, 0U};
 
@@ -375,7 +377,7 @@ static bool led_transport_render_frame(led_tx_kind_t kind)
             color = app.active_frame[logical];
         }
 
-        if (!WS28XX_SetPixel_RGB(led,
+        if (!WS2812B_SetPixel_RGB(led,
                                  pixel,
                                  color.r,
                                  color.g,
@@ -480,7 +482,7 @@ static void led_transport_enter_latch_wait(uint32_t now, bool success)
 
 static void led_transport_start_frame(uint32_t now)
 {
-    WS28XX_HandleTypeDef *led = app.config.led;
+    WS2812B_HandleTypeDef *led = app.config.led;
     led_tx_kind_t kind;
 
     if (!led_transport_channel_ready())
@@ -515,9 +517,9 @@ static void led_transport_start_frame(uint32_t now)
         app.active_frame_generation = 0U;
     }
 
-    if (!led_transport_render_frame(kind) || !WS28XX_Update(led))
+    if (!led_transport_render_frame(kind) || !WS2812B_Update(led))
     {
-        (void)WS28XX_Abort(led);
+        (void)WS2812B_Abort(led);
         app.active_tx_kind = LED_TX_KIND_NONE;
         app.active_frame_kind = LED_FRAME_KIND_NONE;
         app.active_frame_generation = 0U;
@@ -577,7 +579,7 @@ static void led_transport_finish_normal_frame(uint32_t now)
 
 static void led_transport_task(void)
 {
-    WS28XX_HandleTypeDef *led = app.config.led;
+    WS2812B_HandleTypeDef *led = app.config.led;
     uint32_t now = HAL_GetTick();
     bool complete = false;
     bool error = false;
@@ -602,10 +604,10 @@ static void led_transport_task(void)
         else if ((uint32_t)(now - app.tx_started_tick) >=
                  LED_TX_TIMEOUT_MS)
         {
-            (void)WS28XX_Abort(led);
+            (void)WS2812B_Abort(led);
             led_transport_enter_latch_wait(
                 now,
-                WS28XX_GetLastStatus(led) == WS28XX_STATUS_OK);
+                WS2812B_GetLastStatus(led) == WS2812B_STATUS_OK);
         }
     }
 
