@@ -1,5 +1,7 @@
 # TenoDXController-H503
 
+> Designed by AI
+
 基于 STM32H503CBT6 的 TenoDX / maimai 控制器固件。工程使用 STM32CubeIDE、STM32 HAL、TinyUSB 和 WS28XX 驱动，提供触摸、灯光、Aime 读卡器和 12KRO 键盘接口。
 
 > 当前 `main` 已整合 `1.4-aime-touch_test`。触摸模块目前输出 PSoC raw 测试数据，尚未接入最终触摸判定算法。
@@ -221,4 +223,6 @@ keyboard save
 
 ## 许可证
 
-STM32 HAL、CMSIS、TinyUSB 和 WS28XX 驱动遵循各自目录中附带的许可证。项目自有代码的使用范围以仓库后续补充的许可证文件为准。
+项目原创代码依据 [PolyForm Noncommercial License 1.0.0](LICENSE) 公开：个人及非商业用途可免费使用、修改和分享；任何商业用途均须事先取得明确书面授权，商业授权目前免费提供。
+
+本项目属于源码可用项目，并非 OSI 定义的开源软件。许可证适用范围、商业授权方式和第三方声明分别见 [LICENSE-SCOPE.md](LICENSE-SCOPE.md)、[COMMERCIAL_USE.md](COMMERCIAL_USE.md) 和 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
