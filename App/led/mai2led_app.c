@@ -978,8 +978,9 @@ static void set_led_gs_update(void)
     if (app.fade_state == LED_FADE_STATE_ARMED)
     {
         app.fade_progress = 0U;
+        app.fade_started_tick = HAL_GetTick();
         commit_staging_frame(LED_FRAME_KIND_FADE_START);
-        app.fade_state = LED_FADE_STATE_START_PENDING;
+        app.fade_state = LED_FADE_STATE_RUNNING;
     }
     else if (app.fade_state == LED_FADE_STATE_IDLE)
     {
