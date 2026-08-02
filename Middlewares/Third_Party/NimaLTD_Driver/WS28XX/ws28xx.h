@@ -1,150 +1,205 @@
-#ifndef _WS28XX_H_
-#define _WS28XX_H_
-
-/***********************************************************************************************************
-
-  Author:     Nima Askari
-  Github:     https://www.github.com/NimaLTD
-  LinkedIn:   https://www.linkedin.com/in/nimaltd
-  Youtube:    https://www.youtube.com/@nimaltd
-  Instagram:  https://instagram.com/github.NimaLTD
-
-  Version:    3.0.1
-
-  History:
-              3.0.1
-              - Fixed Blinker on first pixel
-                        
-              3.0.0
-              - Rewrite again
-              - Support STM32CubeMx Packet installer
-
-***********************************************************************************************************/
+#ifndef WS28XX_H
+#define WS28XX_H
 
 #ifdef __cplusplus
-extern "C"
-{
+extern "C" {
 #endif
 
-/************************************************************************************************************
-**************    Include Headers
-************************************************************************************************************/
-
 #include <stdbool.h>
-#include "tim.h"
-#include "NimaLTD.I-CUBE-WS28XX_conf.h"
+#include <stddef.h>
+#include <stdint.h>
 
-/************************************************************************************************************
-**************    Public Definitions
-************************************************************************************************************/
+/*
+ * Portable WS2812B/WS28XX driver core.
+ *
+ * The driver does not include a vendor HAL, generated timer header, RTOS, or
+ * CubeMX configuration. The application supplies three transport callbacks:
+ * configure PWM timing, start DMA, and synchronously stop DMA.
+ */
 
-#define COLOR_RGB565_BLACK         0x0000      /*   0,   0,   0 */
-#define COLOR_RGB565_WHITE         0xFFFF      /* 255, 255, 255 */
-#define COLOR_RGB565_RED           0xF800      /* 255,   0,   0 */
-#define COLOR_RGB565_GREEN         0x07E0      /*   0, 255,   0 */
-#define COLOR_RGB565_BLUE          0x001F      /*   0,   0, 255 */
-#define COLOR_RGB565_CYAN          0x07FF      /*   0, 255, 255 */
-#define COLOR_RGB565_MAGENTA       0xF81F      /* 255,   0, 255 */
-#define COLOR_RGB565_YELLOW        0xFFE0      /* 255, 255,   0 */
-#define COLOR_RGB565_ORANGE        0xFD20      /* 255, 165,   0 */
-#define COLOR_RGB565_PINK          0xFC18      /* 255, 192, 203 */
-#define COLOR_RGB565_PURPLE        0x780F      /* 128,   0, 128 */
-#define COLOR_RGB565_TEAL          0x0438      /*   0, 128, 128 */
-#define COLOR_RGB565_LIME          0x07E0      /*   0, 255,   0 */
-#define COLOR_RGB565_AQUA          0x5D1C      /*   0, 255, 255 */
-#define COLOR_RGB565_MAROON        0x7800      /* 128,   0,   0 */
-#define COLOR_RGB565_NAVY          0x000F      /*   0,   0, 128 */
-#define COLOR_RGB565_OLIVE         0x7BE0      /* 128, 128,   0 */
-#define COLOR_RGB565_SILVER        0xC618      /* 192, 192, 192 */
-#define COLOR_RGB565_GRAY          0x8410      /* 128, 128, 128 */
-#define COLOR_RGB565_SKYBLUE       0x867D      /* 135, 206, 235 */
-#define COLOR_RGB565_VIOLET        0x915C      /* 138, 43, 226 */
-#define COLOR_RGB565_BROWN         0xA145      /* 165, 42, 42 */
-#define COLOR_RGB565_GOLD          0xFEA0      /* 255, 215, 0 */
-#define COLOR_RGB565_TAN           0xD5B1      /* 210, 180, 140 */
-#define COLOR_RGB565_FORESTGREEN   0x2444      /* 34, 139, 34 */
-#define COLOR_RGB565_SEAGREEN      0x2C4A      /* 46, 139, 87 */
-#define COLOR_RGB565_CRIMSON       0xD8A7      /* 220, 20, 60 */
-#define COLOR_RGB565_LAVENDER      0xE73B      /* 230, 230, 250 */
-#define COLOR_RGB565_INDIGO        0x4810      /* 75, 0, 130 */
-#define COLOR_RGB565_DARKORANGE    0xFC60      /* 255, 140, 0 */
-#define COLOR_RGB565_CHOCOLATE     0xCB6D      /* 210, 105, 30 */
-#define COLOR_RGB565_FIREBRICK     0xB104      /* 178, 34, 34 */
-#define COLOR_RGB565_CORAL         0xFBEA      /* 255, 127, 80 */
-#define COLOR_RGB565_TOMATO        0xFB08      /* 255, 99, 71 */
-#define COLOR_RGB565_SLATEGRAY     0x7412      /* 112, 128, 144 */
-#define COLOR_RGB565_DARKSLATEGRAY 0x2A69      /* 47, 79, 79 */
-#define COLOR_RGB565_DIMGRAY       0x6B4D      /* 105, 105, 105 */
+#ifndef WS28XX_PIXEL_MAX
+#define WS28XX_PIXEL_MAX              32U
+#endif
 
-#define COLOR_RGB888_BLACK         0x000000    /*   0,   0,   0 */
-#define COLOR_RGB888_WHITE         0xFFFFFF    /* 255, 255, 255 */
-#define COLOR_RGB888_RED           0xFF0000    /* 255,   0,   0 */
-#define COLOR_RGB888_GREEN         0x00FF00    /*   0, 255,   0 */
-#define COLOR_RGB888_BLUE          0x0000FF    /*   0,   0, 255 */
-#define COLOR_RGB888_CYAN          0x00FFFF    /*   0, 255, 255 */
-#define COLOR_RGB888_MAGENTA       0xFF00FF    /* 255,   0, 255 */
-#define COLOR_RGB888_YELLOW        0xFFFF00    /* 255, 255,   0 */
-#define COLOR_RGB888_ORANGE        0xFFA500    /* 255, 165,   0 */
-#define COLOR_RGB888_PINK          0xFFC0CB    /* 255, 192, 203 */
-#define COLOR_RGB888_PURPLE        0x800080    /* 128,   0, 128 */
-#define COLOR_RGB888_TEAL          0x008080    /*   0, 128, 128 */
-#define COLOR_RGB888_LIME          0x00FF00    /*   0, 255,   0 */
-#define COLOR_RGB888_AQUA          0x00FFFF    /*   0, 255, 255 */
-#define COLOR_RGB888_MAROON        0x800000    /* 128,   0,   0 */
-#define COLOR_RGB888_NAVY          0x000080    /*   0,   0, 128 */
-#define COLOR_RGB888_OLIVE         0x808000    /* 128, 128,   0 */
-#define COLOR_RGB888_SILVER        0xC0C0C0    /* 192, 192, 192 */
-#define COLOR_RGB888_GRAY          0x808080    /* 128, 128, 128 */
-#define COLOR_RGB888_SKYBLUE       0x87CEEB    /* 135, 206, 235 */
-#define COLOR_RGB888_VIOLET        0x8A2BE2    /* 138, 43, 226 */
-#define COLOR_RGB888_BROWN         0xA52A2A    /* 165, 42, 42 */
-#define COLOR_RGB888_GOLD          0xFFD700    /* 255, 215, 0 */
-#define COLOR_RGB888_TAN           0xD2B48C    /* 210, 180, 140 */
-#define COLOR_RGB888_FORESTGREEN   0x228B22    /* 34, 139, 34 */
-#define COLOR_RGB888_SEAGREEN      0x2E8B57    /* 46, 139, 87 */
-#define COLOR_RGB888_CRIMSON       0xDC143C    /* 220, 20, 60 */
-#define COLOR_RGB888_LAVENDER      0xE6E6FA    /* 230, 230, 250 */
-#define COLOR_RGB888_INDIGO        0x4B0082    /* 75, 0, 130 */
-#define COLOR_RGB888_DARKORANGE    0xFF8C00    /* 255, 140, 0 */
-#define COLOR_RGB888_CHOCOLATE     0xD2691E    /* 210, 105, 30 */
-#define COLOR_RGB888_FIREBRICK     0xB22222    /* 178, 34, 34 */
-#define COLOR_RGB888_CORAL         0xFF7F50    /* 255, 127, 80 */
-#define COLOR_RGB888_TOMATO        0xFF6347    /* 255, 99, 71 */
-#define COLOR_RGB888_SLATEGRAY     0x708090    /* 112, 128, 144 */
-#define COLOR_RGB888_DARKSLATEGRAY 0x2F4F4F    /* 47, 79, 79 */
-#define COLOR_RGB888_DIMGRAY       0x696969    /* 105, 105, 105 */
+#ifndef WS28XX_DMA_SAMPLE_TYPE
+#define WS28XX_DMA_SAMPLE_TYPE        uint8_t
+#endif
 
-/************************************************************************************************************
-**************    Public struct/enum
-************************************************************************************************************/
+#ifndef WS28XX_LEADING_LOW_SLOTS
+#define WS28XX_LEADING_LOW_SLOTS      2U
+#endif
+
+#ifndef WS28XX_RESET_LOW_SLOTS
+#define WS28XX_RESET_LOW_SLOTS        64U
+#endif
+
+#define WS28XX_BITS_PER_PIXEL         24U
+
+#ifndef WS28XX_DEFAULT_BIT_PERIOD_NS
+#define WS28XX_DEFAULT_BIT_PERIOD_NS  1250U
+#endif
+
+#ifndef WS28XX_DEFAULT_T0H_NS
+#define WS28XX_DEFAULT_T0H_NS         400U
+#endif
+
+#ifndef WS28XX_DEFAULT_T1H_NS
+#define WS28XX_DEFAULT_T1H_NS         800U
+#endif
+
+#define WS28XX_HANDLE_INITIALIZER     {0}
+
+#define WS28XX_DMA_BUFFER_CAPACITY \
+    (WS28XX_LEADING_LOW_SLOTS + \
+     (WS28XX_PIXEL_MAX * WS28XX_BITS_PER_PIXEL) + \
+     WS28XX_RESET_LOW_SLOTS)
+
+#if (WS28XX_PIXEL_MAX == 0U)
+#error "WS28XX_PIXEL_MAX must be greater than zero"
+#endif
+
+#if (WS28XX_PIXEL_MAX > UINT16_MAX)
+#error "WS28XX_PIXEL_MAX must fit in uint16_t"
+#endif
+
+#if defined(__cplusplus)
+#define WS28XX_ALIGNAS_4 alignas(4)
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+#define WS28XX_ALIGNAS_4 _Alignas(4)
+#elif defined(__GNUC__) || defined(__clang__)
+#define WS28XX_ALIGNAS_4 __attribute__((aligned(4)))
+#else
+#define WS28XX_ALIGNAS_4
+#endif
+
+typedef WS28XX_DMA_SAMPLE_TYPE WS28XX_DmaSample;
+
+typedef enum
+{
+    WS28XX_COLOR_ORDER_RGB = 0,
+    WS28XX_COLOR_ORDER_RBG,
+    WS28XX_COLOR_ORDER_GRB,
+    WS28XX_COLOR_ORDER_GBR,
+    WS28XX_COLOR_ORDER_BRG,
+    WS28XX_COLOR_ORDER_BGR
+} WS28XX_ColorOrder;
+
+typedef enum
+{
+    WS28XX_STATE_UNINITIALIZED = 0,
+    WS28XX_STATE_IDLE,
+    WS28XX_STATE_ENCODING,
+    WS28XX_STATE_TX_BUSY,
+    WS28XX_STATE_STOPPING
+} WS28XX_State;
+
+typedef enum
+{
+    WS28XX_STATUS_OK = 0,
+    WS28XX_STATUS_BUSY,
+    WS28XX_STATUS_INVALID_ARGUMENT,
+    WS28XX_STATUS_OUT_OF_RANGE,
+    WS28XX_STATUS_TRANSPORT_ERROR,
+    WS28XX_STATUS_ABORTED
+} WS28XX_Status;
+
+typedef bool (*WS28XX_ConfigurePwmFn)(void *context,
+                                     uint32_t period_ticks,
+                                     WS28XX_DmaSample pulse0_ticks,
+                                     WS28XX_DmaSample pulse1_ticks);
+
+typedef bool (*WS28XX_StartDmaFn)(void *context,
+                                  WS28XX_DmaSample const *samples,
+                                  size_t sample_count);
+
+/*
+ * Stop must be idempotent. A successful call must guarantee that DMA no longer
+ * reads samples before it returns. This contract also covers cleanup after a
+ * failed StartDma call and is what makes Abort safe for buffer reuse.
+ */
+typedef bool (*WS28XX_StopDmaFn)(void *context);
+
+typedef uintptr_t (*WS28XX_EnterCriticalFn)(void *context);
+typedef void (*WS28XX_ExitCriticalFn)(void *context, uintptr_t state);
 
 typedef struct
 {
-  TIM_HandleTypeDef      *hTim;
-  uint8_t                Channel;
-  uint8_t                Lock;
-  uint16_t               Pulse0;
-  uint16_t               Pulse1;
-  uint16_t               MaxPixel;
-  uint8_t                Pixel[WS28XX_PIXEL_MAX][3];
-  uint8_t                Buffer[(WS28XX_PIXEL_MAX * 24) + 4];
+    void *TransportContext;
+    WS28XX_ConfigurePwmFn ConfigurePwm;
+    WS28XX_StartDmaFn StartDma;
+    WS28XX_StopDmaFn StopDma;
+    WS28XX_EnterCriticalFn EnterCritical;
+    WS28XX_ExitCriticalFn ExitCritical;
+    uint32_t TimerFrequencyHz;
+    uint32_t BitPeriodNs;
+    uint32_t T0HNs;
+    uint32_t T1HNs;
+    uint16_t PixelCount;
+    WS28XX_ColorOrder ColorOrder;
+    bool GammaEnabled;
+    uint8_t const *GammaTable;
+} WS28XX_Config;
 
+typedef struct
+{
+    uint32_t Magic;
+    void *TransportContext;
+    WS28XX_ConfigurePwmFn ConfigurePwm;
+    WS28XX_StartDmaFn StartDma;
+    WS28XX_StopDmaFn StopDma;
+    WS28XX_EnterCriticalFn EnterCritical;
+    WS28XX_ExitCriticalFn ExitCritical;
+    uint32_t PeriodTicks;
+    WS28XX_DmaSample Pulse0;
+    WS28XX_DmaSample Pulse1;
+    uint16_t MaxPixel;
+    WS28XX_ColorOrder ColorOrder;
+    bool GammaEnabled;
+    uint8_t const *GammaTable;
+    volatile WS28XX_State State;
+    volatile WS28XX_Status LastStatus;
+    uint8_t Pixel[WS28XX_PIXEL_MAX][3];
+    WS28XX_ALIGNAS_4 WS28XX_DmaSample Buffer[WS28XX_DMA_BUFFER_CAPACITY];
 } WS28XX_HandleTypeDef;
 
-/************************************************************************************************************
-**************    Public Functions
-************************************************************************************************************/
+bool WS28XX_Init(WS28XX_HandleTypeDef *led, WS28XX_Config const *config);
 
-bool  WS28XX_Init(WS28XX_HandleTypeDef *hLed, TIM_HandleTypeDef *hTim,
-      uint16_t TimerBusFrequencyMHz, uint8_t Channel, uint16_t Pixel);
-bool  WS28XX_SetPixel_RGB(WS28XX_HandleTypeDef *hLed, uint16_t Pixel, uint8_t Red, uint8_t Green, uint8_t Blue);
-bool  WS28XX_SetPixel_RGB_565(WS28XX_HandleTypeDef *hLed, uint16_t Pixel, uint16_t Color);
-bool  WS28XX_SetPixel_RGB_888(WS28XX_HandleTypeDef *hLed, uint16_t Pixel, uint32_t Color);
-bool  WS28XX_SetPixel_RGBW_565(WS28XX_HandleTypeDef *hLed, uint16_t Pixel, uint16_t Color, uint8_t Brightness);
-bool  WS28XX_SetPixel_RGBW_888(WS28XX_HandleTypeDef *hLed, uint16_t Pixel, uint32_t Color, uint8_t Brightness);
-bool  WS28XX_Update(WS28XX_HandleTypeDef *hLed);
+bool WS28XX_SetPixel_RGB(WS28XX_HandleTypeDef *led,
+                         uint16_t pixel,
+                         uint8_t red,
+                         uint8_t green,
+                         uint8_t blue);
+bool WS28XX_SetPixel_RGB_565(WS28XX_HandleTypeDef *led,
+                             uint16_t pixel,
+                             uint16_t color);
+bool WS28XX_SetPixel_RGB_888(WS28XX_HandleTypeDef *led,
+                             uint16_t pixel,
+                             uint32_t color);
+bool WS28XX_SetPixel_RGBW_565(WS28XX_HandleTypeDef *led,
+                              uint16_t pixel,
+                              uint16_t color,
+                              uint8_t brightness);
+bool WS28XX_SetPixel_RGBW_888(WS28XX_HandleTypeDef *led,
+                              uint16_t pixel,
+                              uint32_t color,
+                              uint8_t brightness);
+
+/* Starts a non-blocking transfer. Returns false while DMA owns Buffer. */
+bool WS28XX_Update(WS28XX_HandleTypeDef *led);
+bool WS28XX_IsBusy(WS28XX_HandleTypeDef const *led);
+WS28XX_State WS28XX_GetState(WS28XX_HandleTypeDef const *led);
+WS28XX_Status WS28XX_GetLastStatus(WS28XX_HandleTypeDef const *led);
+size_t WS28XX_GetTransferLength(WS28XX_HandleTypeDef const *led);
+
+/* Forward the active transport's completion/error callbacks to these APIs. */
+bool WS28XX_NotifyTransferComplete(WS28XX_HandleTypeDef *led);
+bool WS28XX_NotifyTransferError(WS28XX_HandleTypeDef *led);
+
+/* Synchronously stops an active transfer before releasing the DMA lock. */
+bool WS28XX_Abort(WS28XX_HandleTypeDef *led);
 
 #ifdef __cplusplus
 }
 #endif
-#endif
+
+#endif /* WS28XX_H */

@@ -339,47 +339,12 @@ static void cancel_fade(void)
     }
 }
 
-static DMA_HandleTypeDef *led_transport_dma_handle(void)
-{
-    WS28XX_HandleTypeDef const *led = app.config.led;
-
-    if ((led == NULL) || (led->hTim == NULL))
-    {
-        return NULL;
-    }
-
-    switch (led->Channel)
-    {
-        case TIM_CHANNEL_1:
-            return led->hTim->hdma[TIM_DMA_ID_CC1];
-
-        case TIM_CHANNEL_2:
-            return led->hTim->hdma[TIM_DMA_ID_CC2];
-
-        case TIM_CHANNEL_3:
-            return led->hTim->hdma[TIM_DMA_ID_CC3];
-
-        case TIM_CHANNEL_4:
-            return led->hTim->hdma[TIM_DMA_ID_CC4];
-
-        default:
-            return NULL;
-    }
-}
-
 static bool led_transport_channel_ready(void)
 {
     WS28XX_HandleTypeDef const *led = app.config.led;
-    DMA_HandleTypeDef const *dma = led_transport_dma_handle();
 
-    if ((led == NULL) || (led->hTim == NULL) || (dma == NULL))
-    {
-        return false;
-    }
-
-    return (HAL_TIM_GetChannelState(led->hTim, led->Channel) ==
-            HAL_TIM_CHANNEL_STATE_READY) &&
-           (HAL_DMA_GetState(dma) == HAL_DMA_STATE_READY);
+    return (led != NULL) &&
+           (WS28XX_GetState(led) == WS28XX_STATE_IDLE);
 }
 
 static bool led_transport_render_frame(led_tx_kind_t kind)
@@ -552,7 +517,7 @@ static void led_transport_start_frame(uint32_t now)
 
     if (!led_transport_render_frame(kind) || !WS28XX_Update(led))
     {
-        (void)HAL_TIM_PWM_Stop_DMA(led->hTim, led->Channel);
+        (void)WS28XX_Abort(led);
         app.active_tx_kind = LED_TX_KIND_NONE;
         app.active_frame_kind = LED_FRAME_KIND_NONE;
         app.active_frame_generation = 0U;
@@ -619,7 +584,7 @@ static void led_transport_task(void)
 
     led_transport_take_events(&complete, &error);
 
-    if ((led == NULL) || (led->hTim == NULL))
+    if (led == NULL)
     {
         return;
     }
@@ -637,8 +602,10 @@ static void led_transport_task(void)
         else if ((uint32_t)(now - app.tx_started_tick) >=
                  LED_TX_TIMEOUT_MS)
         {
-            (void)HAL_TIM_PWM_Stop_DMA(led->hTim, led->Channel);
-            led_transport_enter_latch_wait(now, false);
+            (void)WS28XX_Abort(led);
+            led_transport_enter_latch_wait(
+                now,
+                WS28XX_GetLastStatus(led) == WS28XX_STATUS_OK);
         }
     }
 
@@ -978,9 +945,8 @@ static void set_led_gs_update(void)
     if (app.fade_state == LED_FADE_STATE_ARMED)
     {
         app.fade_progress = 0U;
-        app.fade_started_tick = HAL_GetTick();
         commit_staging_frame(LED_FRAME_KIND_FADE_START);
-        app.fade_state = LED_FADE_STATE_RUNNING;
+        app.fade_state = LED_FADE_STATE_START_PENDING;
     }
     else if (app.fade_state == LED_FADE_STATE_IDLE)
     {
