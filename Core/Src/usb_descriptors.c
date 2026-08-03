@@ -4,8 +4,8 @@
 // Device Descriptor
 //--------------------------------------------------------------------
 
-#define USB_VID   0xCafe
-#define USB_PID   0x4313
+#define USB_VID   0x0483
+#define USB_PID   0x5740
 #define USB_BCD   0x0100
 
 enum

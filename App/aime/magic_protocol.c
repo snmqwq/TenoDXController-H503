@@ -38,6 +38,7 @@ typedef struct
 } magic_protocol_state_t;
 
 static magic_protocol_state_t protocol;
+static uint8_t magic_response[MAGIC_CONFIG_MAX_PAYLOAD];
 
 static const uint8_t magic_sequence[MAGIC_SEQUENCE_LENGTH] =
 {
@@ -230,7 +231,6 @@ void magic_protocol_feed(uint8_t data)
 
 static void magic_process_request(void)
 {
-    uint8_t response[MAGIC_CONFIG_MAX_PAYLOAD];
     uint8_t response_length = 0U;
     uint8_t module = protocol.rx.header[0];
     uint8_t cmd = protocol.rx.header[1];
@@ -243,15 +243,15 @@ static void magic_process_request(void)
                                  param,
                                  protocol.rx.payload,
                                  payload_length,
-                                 response,
-                                 (uint8_t)sizeof(response),
+                                 magic_response,
+                                 (uint8_t)sizeof(magic_response),
                                  &response_length);
 
     magic_queue_response(status,
                          module,
                          cmd,
                          param,
-                         response,
+                         magic_response,
                          response_length);
 }
 

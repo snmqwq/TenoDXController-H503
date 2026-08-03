@@ -35,16 +35,28 @@
   - `tenodata.c` — 将直接 CDC 调用替换为 cdc_manager API
   - `main.c` — 引入 mai2touch 模块
 
+### 节点 6: Touch 应用层迁移与统一配置
+- **日期**: 2026-08-03
+- **变更**:
+  - 将 Touch 检测、PSoC 通信、CDC 路由和 Mai2Touch 协议整体迁移到 `App/touch/`
+  - 新增 `touch_app_init()` / `touch_app_task()`，顶层应用不再直接调度内部 Touch 子模块
+  - 将物理通道映射集中为“34-bit Mai2Touch 区域掩码 + 共用 block”表，并接入 Magic/Flash
+  - 映射表变更后立即清除旧输出并排空当前 I2C 操作，再完整执行探测、写配置、硬件校准和软件基线流程重置；raw 模式下的新基线采集延后到切回 Mai2Touch
+- **影响**: `Core/` 仅保留生成的外设与 HAL 基础代码，不再承载 Touch 业务实现
+
 ---
 
 ## 当前文件结构
 ```
-Core/Src/touch/
-├── tenodata_config.h/c   ← 硬件扫描参数
-├── psoc_comm.h/c         ← PSoC I2C 通信
-├── tenodata.h/c          ← tenodata 状态机 + CDC 推流
-├── mai2touch.h/c         ← Mai2Touch ASCII 协议 (测试版)
-├── cdc_manager.h/c       ← CDC 收发管理 + 路由开关
+App/touch/
+├── touch_app.h/c                 ← Touch 统一初始化、任务和配置入口
+├── tenodata_config.h/c           ← 统一通道映射与固定 A–E 扫描档位
+├── psoc_comm.h/c                 ← PSoC I2C 通信
+├── tenodata.h/c                  ← 初始化/重配置状态机 + raw CDC 推流
+├── touch_pipeline.h/c            ← 软件基线、Detector 和区域 OR 合并
+├── button_detector*.h/c          ← A–E 触摸判定逻辑
+├── mai2touch.h/c                 ← Mai2Touch 协议
+└── cdc_manager.h/c               ← CDC0 收发管理 + 路由开关
 ```
 
 ## CDC 路由规则

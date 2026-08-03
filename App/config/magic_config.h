@@ -36,7 +36,7 @@ extern "C" {
 #define MAGIC_CONFIG_STATUS_LENGTH_ERROR   0x05U
 #define MAGIC_CONFIG_STATUS_IO_ERROR       0x06U
 
-#define MAGIC_CONFIG_MAX_PAYLOAD       192U
+#define MAGIC_CONFIG_MAX_PAYLOAD       248U
 
 typedef bool (*magic_config_read_cb_t)(uint8_t param,
                                        uint8_t *data,

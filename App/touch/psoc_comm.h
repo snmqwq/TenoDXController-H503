@@ -43,11 +43,12 @@ uint8_t psoc_comm_connected_count(void);
 const PsocDevice* psoc_comm_get_device(uint8_t index);
 
 // 将 68 字节配置写入指定 PSoC，并触发校准
-void psoc_comm_write_config_and_calibrate(uint8_t device_index, const uint8_t *psoc_cfg_68);
+bool psoc_comm_write_config_and_calibrate(uint8_t device_index,
+                                          const uint8_t *psoc_cfg_68);
 
 // 将所有 34 通道配置拆分写入两个 PSoC
 // config_payload_136: 34×Res + 34×Mod + 34×Sns + 34×Div
-void psoc_comm_write_config_all(const uint8_t *config_payload_136);
+bool psoc_comm_write_config_all(const uint8_t *config_payload_136);
 
 // 读取 PSoC 状态 (阻塞)
 bool psoc_comm_read_status(uint8_t device_index, uint8_t *status_out);

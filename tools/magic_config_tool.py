@@ -20,7 +20,7 @@ except ImportError:
 
 MAGIC_SEQUENCE = bytes([0x91, 0x3E, 0xED, 0x20, 0x7C, 0x99, 0x58, 0xAC])
 MAGIC_RESPONSE_SYNC = 0xAC
-MAX_PAYLOAD = 192
+MAX_PAYLOAD = 248
 
 MODULES = {
     "global": 0x00,
@@ -56,6 +56,32 @@ LIGHT_PARAM_LED_PER_BIT = 0x01
 LIGHT_PARAM_RAINBOW_ENABLE = 0x02
 LIGHT_INFO_PARAMS = bytes([LIGHT_PARAM_LED_PER_BIT, LIGHT_PARAM_RAINBOW_ENABLE])
 CONNECTION_CHECK_INTERVAL_SECONDS = 1.0
+
+TOUCH_MODULE = 0x10
+TOUCH_PARAM_FULL_MAP = 0x01
+TOUCH_PARAM_MODE = 0x02
+TOUCH_PARAM_BATCH_MAP = 0x03
+TOUCH_CHANNEL_COUNT = 34
+TOUCH_ZONE_COUNT = 34
+TOUCH_MASK_BYTES = 5
+TOUCH_MAP_ENTRY_SIZE = TOUCH_MASK_BYTES + 1
+TOUCH_BATCH_RECORD_SIZE = 1 + TOUCH_MAP_ENTRY_SIZE
+TOUCH_MODE_RAW = 0
+TOUCH_MODE_MAI2TOUCH = 1
+TOUCH_MODE_VALUES = {
+    "raw": TOUCH_MODE_RAW,
+    "mai2touch": TOUCH_MODE_MAI2TOUCH,
+}
+TOUCH_MODE_NAMES = {value: name for name, value in TOUCH_MODE_VALUES.items()}
+TOUCH_BLOCKS = "ABCDE"
+TOUCH_ZONE_NAMES = tuple(
+    [f"A{number}" for number in range(1, 9)]
+    + [f"B{number}" for number in range(1, 9)]
+    + [f"C{number}" for number in range(1, 3)]
+    + [f"D{number}" for number in range(1, 9)]
+    + [f"E{number}" for number in range(1, 9)]
+)
+TOUCH_ZONE_BITS = {name: bit for bit, name in enumerate(TOUCH_ZONE_NAMES)}
 
 GLOBAL_MODULE = 0x00
 GLOBAL_PARAM_ALL = 0x00
@@ -160,6 +186,187 @@ class MagicResponse:
     @property
     def status_text(self) -> str:
         return STATUS_TEXT.get(self.status, f"UNKNOWN_0x{self.status:02X}")
+
+
+@dataclasses.dataclass(frozen=True)
+class TouchMapEntry:
+    zone_mask: int
+    block: str
+
+
+def parse_touch_channel(text: str) -> int:
+    try:
+        channel = int(text, 0)
+    except ValueError as exc:
+        raise ValueError("channel must be 0..33") from exc
+    if not 0 <= channel < TOUCH_CHANNEL_COUNT:
+        raise ValueError("channel must be 0..33")
+    return channel
+
+
+def parse_touch_block(text: str) -> str:
+    block = text.strip().upper()
+    if block not in TOUCH_BLOCKS or len(block) != 1:
+        raise ValueError("block must be A, B, C, D, or E")
+    return block
+
+
+def validate_touch_zone_mask(zone_mask: int) -> int:
+    if not isinstance(zone_mask, int) or not 0 <= zone_mask < (1 << TOUCH_ZONE_COUNT):
+        raise ValueError("touch zone mask must contain only bits 0..33")
+    return zone_mask
+
+
+def parse_touch_zones(text: str) -> int:
+    value = text.strip()
+    if value.lower() == "none":
+        return 0
+    if not value:
+        raise ValueError("zones must be a comma-separated list such as A1,C2, or none")
+
+    zone_mask = 0
+    for item in value.split(","):
+        zone = item.strip().upper()
+        if zone not in TOUCH_ZONE_BITS:
+            raise ValueError(
+                f"unknown touch zone {item!r}; use A1..A8, B1..B8, "
+                "C1..C2, D1..D8, E1..E8, or none"
+            )
+        bit = TOUCH_ZONE_BITS[zone]
+        if zone_mask & (1 << bit):
+            raise ValueError(f"touch zone {zone} is repeated")
+        zone_mask |= 1 << bit
+    return zone_mask
+
+
+def format_touch_zones(zone_mask: int) -> str:
+    validate_touch_zone_mask(zone_mask)
+    if zone_mask == 0:
+        return "none"
+    return ",".join(
+        name for bit, name in enumerate(TOUCH_ZONE_NAMES) if zone_mask & (1 << bit)
+    )
+
+
+def validate_touch_map_entry(entry: TouchMapEntry) -> TouchMapEntry:
+    validate_touch_zone_mask(entry.zone_mask)
+    parse_touch_block(entry.block)
+    return entry
+
+
+def encode_touch_map_entry(entry: TouchMapEntry) -> bytes:
+    validate_touch_map_entry(entry)
+    return entry.zone_mask.to_bytes(TOUCH_MASK_BYTES, "little") + entry.block.upper().encode("ascii")
+
+
+def decode_touch_map_entry(payload: bytes) -> TouchMapEntry:
+    if len(payload) != TOUCH_MAP_ENTRY_SIZE:
+        raise ValueError(
+            f"touch map entry must be {TOUCH_MAP_ENTRY_SIZE} bytes, got {len(payload)}"
+        )
+    entry = TouchMapEntry(
+        zone_mask=int.from_bytes(payload[:TOUCH_MASK_BYTES], "little"),
+        block=chr(payload[TOUCH_MASK_BYTES]),
+    )
+    validate_touch_map_entry(entry)
+    return TouchMapEntry(entry.zone_mask, entry.block.upper())
+
+
+def encode_touch_full_map(entries: list[TouchMapEntry]) -> bytes:
+    if len(entries) != TOUCH_CHANNEL_COUNT:
+        raise ValueError(f"full touch map must contain {TOUCH_CHANNEL_COUNT} channels")
+    return b"".join(encode_touch_map_entry(entry) for entry in entries)
+
+
+def decode_touch_full_map(payload: bytes) -> list[TouchMapEntry]:
+    expected_length = TOUCH_CHANNEL_COUNT * TOUCH_MAP_ENTRY_SIZE
+    if len(payload) != expected_length:
+        raise ValueError(f"full touch map must be {expected_length} bytes, got {len(payload)}")
+    return [
+        decode_touch_map_entry(payload[offset:offset + TOUCH_MAP_ENTRY_SIZE])
+        for offset in range(0, len(payload), TOUCH_MAP_ENTRY_SIZE)
+    ]
+
+
+def encode_touch_batch(records: list[tuple[int, TouchMapEntry]]) -> bytes:
+    if not 1 <= len(records) <= TOUCH_CHANNEL_COUNT:
+        raise ValueError(f"touch batch must contain 1..{TOUCH_CHANNEL_COUNT} channels")
+
+    channels: set[int] = set()
+    payload = bytearray()
+    for channel, entry in records:
+        if not 0 <= channel < TOUCH_CHANNEL_COUNT:
+            raise ValueError("channel must be 0..33")
+        if channel in channels:
+            raise ValueError(f"channel {channel} is repeated in the same batch")
+        channels.add(channel)
+        payload.append(channel)
+        payload.extend(encode_touch_map_entry(entry))
+    return bytes(payload)
+
+
+def decode_touch_batch(payload: bytes) -> list[tuple[int, TouchMapEntry]]:
+    if not payload or len(payload) % TOUCH_BATCH_RECORD_SIZE != 0:
+        raise ValueError(
+            f"touch batch length must be a non-zero multiple of {TOUCH_BATCH_RECORD_SIZE}"
+        )
+    record_count = len(payload) // TOUCH_BATCH_RECORD_SIZE
+    if record_count > TOUCH_CHANNEL_COUNT:
+        raise ValueError(f"touch batch must contain at most {TOUCH_CHANNEL_COUNT} channels")
+
+    records: list[tuple[int, TouchMapEntry]] = []
+    channels: set[int] = set()
+    for offset in range(0, len(payload), TOUCH_BATCH_RECORD_SIZE):
+        channel = payload[offset]
+        if channel >= TOUCH_CHANNEL_COUNT:
+            raise ValueError(f"channel must be 0..33, got {channel}")
+        if channel in channels:
+            raise ValueError(f"channel {channel} is repeated in the same batch")
+        channels.add(channel)
+        entry_start = offset + 1
+        records.append(
+            (
+                channel,
+                decode_touch_map_entry(
+                    payload[entry_start:entry_start + TOUCH_MAP_ENTRY_SIZE]
+                ),
+            )
+        )
+    return records
+
+
+def parse_touch_batch_args(argv: list[str]) -> list[tuple[int, TouchMapEntry]]:
+    if not argv or len(argv) % 3 != 0:
+        raise ValueError(
+            "set-many requires one or more groups: <channel> <zones|none> <block>"
+        )
+    records = []
+    for offset in range(0, len(argv), 3):
+        records.append(
+            (
+                parse_touch_channel(argv[offset]),
+                TouchMapEntry(
+                    parse_touch_zones(argv[offset + 1]),
+                    parse_touch_block(argv[offset + 2]),
+                ),
+            )
+        )
+    # Encoding performs the final record-count and duplicate-channel validation.
+    encode_touch_batch(records)
+    return records
+
+
+def parse_touch_mode(text: str) -> int:
+    mode = text.strip().lower()
+    if mode not in TOUCH_MODE_VALUES:
+        raise ValueError("touch mode must be raw or mai2touch")
+    return TOUCH_MODE_VALUES[mode]
+
+
+def decode_touch_mode(payload: bytes) -> int:
+    if len(payload) != 1 or payload[0] not in TOUCH_MODE_NAMES:
+        raise ValueError("touch mode response must be one byte: 0=raw or 1=mai2touch")
+    return payload[0]
 
 
 class MagicConfigClient:
@@ -491,6 +698,50 @@ def show_keyboard(client: MagicConfigClient) -> None:
         print(f"  {keyboard_button_name(index)}: 0x{value:02X} ({key_name(value)}){key_type}")
 
 
+def read_touch_map(client: MagicConfigClient) -> list[TouchMapEntry] | None:
+    response = safe_request(
+        client,
+        TOUCH_MODULE,
+        COMMANDS["read"],
+        TOUCH_PARAM_FULL_MAP,
+    )
+    if not response or not response.ok:
+        return None
+    try:
+        return decode_touch_full_map(response.payload)
+    except ValueError as exc:
+        print(f"Error: invalid touch map response: {exc}")
+        return None
+
+
+def read_touch_mode(client: MagicConfigClient) -> int | None:
+    response = safe_request(
+        client,
+        TOUCH_MODULE,
+        COMMANDS["read"],
+        TOUCH_PARAM_MODE,
+    )
+    if not response or not response.ok:
+        return None
+    try:
+        return decode_touch_mode(response.payload)
+    except ValueError as exc:
+        print(f"Error: invalid touch mode response: {exc}")
+        return None
+
+
+def show_touch_map(client: MagicConfigClient) -> None:
+    entries = read_touch_map(client)
+    if entries is None:
+        return
+    print("\nTouch channel map")
+    for channel, entry in enumerate(entries):
+        print(
+            f"  channel {channel:2}: zones={format_touch_zones(entry.zone_mask):<24} "
+            f"block={entry.block}"
+        )
+
+
 def print_general_help() -> None:
     print(
         """
@@ -498,7 +749,7 @@ def print_general_help() -> None:
   help [type]                 显示帮助；type 可为 led/touch/aime/keyboard/dfu/raw
   led <command> [args]        灯光配置
   keyboard <command> [args]   键盘配置
-  touch help                  触摸配置占位，当前暂不完善
+  touch <command> [args]      触摸通道映射和协议输出模式配置
   aime help                   说明 Aime 不提供配置接口
   dfu enter                   进入 DFU
   raw <module> <cmd> <param> [payload bytes...]
@@ -512,6 +763,9 @@ def print_general_help() -> None:
   keyboard set EK_1 a
   keyboard set-all 3 kp_multiply 8 9
   keyboard layout 2p
+  touch set 0 A1,C2 E
+  touch set-many 0 A1,C2 E 1 none D
+  touch mode mai2touch
   raw light read 0x01
 """.strip()
     )
@@ -572,11 +826,27 @@ def print_touch_help() -> None:
     print(
         """
 touch 命令:
-  touch help                  显示本说明
+  touch get                   读取全部 34 个物理通道的区域映射和共用 block
+  touch set <channel> <zones|none> <block>
+                              修改一个通道；zones 使用逗号分隔，例如 A1,C2,E4
+  touch set-many <channel> <zones|none> <block> [...]
+                              按三元组一次修改多个通道，同批通道不可重复
+  touch mode                  读取 CDC0 输出模式
+  touch mode <raw|mai2touch>  设置 CDC0 输出模式
+  touch save                  保存当前 Touch 配置到 Flash
+  touch defaults              恢复 Touch 默认配置到 RAM
+  touch info                  读取固件暴露的 Touch 参数列表
 
-说明:
-  当前先不完善 touch 配置命令，不会向设备发送 touch 配置请求。
-  后续触摸阈值等参数需要先确认固件端协议和参数含义后再接入。
+区域:
+  A1..A8、B1..B8、C1..C2、D1..D8、E1..E8；none 表示不映射区域。
+  一个物理通道可映射多个区域，多个物理通道也可映射同一区域。
+  set/set-many 只修改 RAM；需要执行 touch save 才会持久化。
+
+示例:
+  touch set 0 A1,C2,E4 E
+  touch set 1 none D
+  touch set-many 0 A1,C2 E 1 none D 12 B4,B5 B
+  touch mode mai2touch
 """.strip()
     )
 
@@ -814,12 +1084,112 @@ def cmd_keyboard(client: MagicConfigClient, argv: list[str]) -> None:
     command_error(f"未知 keyboard 命令: {argv[0]}", "keyboard")
 
 
-def cmd_touch(argv: list[str]) -> None:
+def cmd_touch(client: MagicConfigClient, argv: list[str]) -> None:
     if not argv or argv[0].lower() in ("help", "-h", "--help"):
         print_touch_help()
         return
-    print_touch_help()
-    print(f"\n未执行: touch {argv[0]} 当前未实现。")
+
+    command = argv[0].lower()
+    if command in ("get", "show"):
+        if len(argv) != 1:
+            command_error("touch get 不接受参数。", "touch")
+            return
+        show_touch_map(client)
+        return
+
+    if command == "set":
+        if len(argv) != 4:
+            command_error(
+                "touch set 需要参数: <channel> <zones|none> <block>",
+                "touch",
+            )
+            return
+        try:
+            records = parse_touch_batch_args(argv[1:])
+            payload = encode_touch_batch(records)
+        except ValueError as exc:
+            command_error(str(exc), "touch")
+            return
+        response = safe_request(
+            client,
+            TOUCH_MODULE,
+            COMMANDS["write"],
+            TOUCH_PARAM_BATCH_MAP,
+            payload,
+        )
+        if response and response.ok:
+            channel, entry = records[0]
+            print(
+                f"channel {channel}: zones={format_touch_zones(entry.zone_mask)} "
+                f"block={entry.block}"
+            )
+        return
+
+    if command == "set-many":
+        try:
+            records = parse_touch_batch_args(argv[1:])
+            payload = encode_touch_batch(records)
+        except ValueError as exc:
+            command_error(str(exc), "touch")
+            return
+        response = safe_request(
+            client,
+            TOUCH_MODULE,
+            COMMANDS["write"],
+            TOUCH_PARAM_BATCH_MAP,
+            payload,
+        )
+        if response and response.ok:
+            print(f"已一次性修改 {len(records)} 个通道。")
+        return
+
+    if command == "mode":
+        if len(argv) == 1:
+            mode = read_touch_mode(client)
+            if mode is not None:
+                print(f"Touch mode = {TOUCH_MODE_NAMES[mode]}")
+            return
+        if len(argv) != 2:
+            command_error("touch mode 接受 0 或 1 个参数: [raw|mai2touch]", "touch")
+            return
+        try:
+            mode = parse_touch_mode(argv[1])
+        except ValueError as exc:
+            command_error(str(exc), "touch")
+            return
+        response = safe_request(
+            client,
+            TOUCH_MODULE,
+            COMMANDS["write"],
+            TOUCH_PARAM_MODE,
+            bytes([mode]),
+        )
+        if response and response.ok:
+            print(f"Touch mode = {TOUCH_MODE_NAMES[mode]}")
+        return
+
+    if command == "save":
+        if len(argv) != 1:
+            command_error("touch save 不接受参数。", "touch")
+            return
+        safe_request(client, TOUCH_MODULE, COMMANDS["save"])
+        return
+
+    if command in ("defaults", "default"):
+        if len(argv) != 1:
+            command_error("touch defaults 不接受参数。", "touch")
+            return
+        safe_request(client, TOUCH_MODULE, COMMANDS["defaults"])
+        return
+
+    if command == "info":
+        if len(argv) != 1:
+            command_error("touch info 不接受参数。", "touch")
+            return
+        safe_request(client, TOUCH_MODULE, COMMANDS["info"])
+        return
+
+    command_error(f"未知 touch 命令: {argv[0]}", "touch")
 
 
 def cmd_aime(argv: list[str]) -> None:
@@ -1003,7 +1373,7 @@ def command_loop(client: MagicConfigClient, args: argparse.Namespace) -> None:
         elif root == "keyboard":
             cmd_keyboard(client, argv)
         elif root == "touch":
-            cmd_touch(argv)
+            cmd_touch(client, argv)
         elif root in ("aime", "reader"):
             cmd_aime(argv)
         elif root == "dfu":

@@ -6,8 +6,7 @@ Required Notice: Copyright (c) 2026 TenoDXController-H503 contributors.
 
 项目原创代码主要包括：
 
-- `App/` 中除 `third_party/` 外的项目实现；
-- `Core/Src/touch/` 及相应项目自有头文件中的共同开发内容；
+- `App/` 中除 `third_party/` 外的项目实现，包括 `App/touch/` 中的共同开发内容；
 - CubeMX 生成文件中由项目贡献者编写的 `USER CODE` 内容；
 - `tools/` 中未标注其他来源或许可证的项目脚本。
 

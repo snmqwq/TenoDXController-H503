@@ -5,7 +5,9 @@
 extern "C" {
 #endif
 
-void touch_config_init(void);
+#include <stdbool.h>
+
+bool touch_config_init(void);
 
 #ifdef __cplusplus
 }

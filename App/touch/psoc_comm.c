@@ -60,28 +60,46 @@ const PsocDevice* psoc_comm_get_device(uint8_t index)
     return &devices[index];
 }
 
-void psoc_comm_write_config_and_calibrate(uint8_t device_index, const uint8_t *psoc_cfg_68)
+bool psoc_comm_write_config_and_calibrate(uint8_t device_index,
+                                          const uint8_t *psoc_cfg_68)
 {
-    if (device_index >= PSOC_COMM_DEVICE_COUNT || !devices[device_index].connected) return;
+    uint8_t start_cmd = PSOC_STATUS_START_CALIBRATION;
+
+    if ((device_index >= PSOC_COMM_DEVICE_COUNT) ||
+        !devices[device_index].connected ||
+        (psoc_cfg_68 == NULL))
+    {
+        return false;
+    }
 
     // 1. 写入 68 字节配置
-    HAL_I2C_Mem_Write(&hi2c1, devices[device_index].address << 1,
-                      PSOC_EZI2C_OFFSET_CONFIG, I2C_MEMADD_SIZE_8BIT,
-                      (uint8_t *)psoc_cfg_68, PSOC_COMM_CONFIG_LENGTH, 100);
+    if (HAL_I2C_Mem_Write(&hi2c1, devices[device_index].address << 1,
+                          PSOC_EZI2C_OFFSET_CONFIG, I2C_MEMADD_SIZE_8BIT,
+                          (uint8_t *)psoc_cfg_68,
+                          PSOC_COMM_CONFIG_LENGTH, 100) != HAL_OK)
+    {
+        return false;
+    }
 
     // 2. 等待 PSoC 消化
     HAL_Delay(5);
 
     // 3. 触发校准
-    uint8_t start_cmd = PSOC_STATUS_START_CALIBRATION;
-    HAL_I2C_Mem_Write(&hi2c1, devices[device_index].address << 1,
-                      PSOC_EZI2C_OFFSET_STATUS, I2C_MEMADD_SIZE_8BIT,
-                      &start_cmd, 1, 10);
+    return HAL_I2C_Mem_Write(&hi2c1, devices[device_index].address << 1,
+                             PSOC_EZI2C_OFFSET_STATUS,
+                             I2C_MEMADD_SIZE_8BIT,
+                             &start_cmd, 1, 10) == HAL_OK;
 }
 
-void psoc_comm_write_config_all(const uint8_t *config_payload_136)
+bool psoc_comm_write_config_all(const uint8_t *config_payload_136)
 {
     uint8_t psoc_cfg[PSOC_COMM_CONFIG_LENGTH];
+    uint8_t written_count = 0U;
+
+    if (config_payload_136 == NULL)
+    {
+        return false;
+    }
 
     for (int i = 0; i < PSOC_COMM_DEVICE_COUNT; i++) {
         if (!devices[i].connected) continue;
@@ -95,8 +113,15 @@ void psoc_comm_write_config_all(const uint8_t *config_payload_136)
         memcpy(&psoc_cfg[34], &config_payload_136[68  + offset], 17); // Sense Div
         memcpy(&psoc_cfg[51], &config_payload_136[102 + offset], 17); // Mod Div
 
-        psoc_comm_write_config_and_calibrate(i, psoc_cfg);
+        if (!psoc_comm_write_config_and_calibrate((uint8_t)i, psoc_cfg))
+        {
+            return false;
+        }
+
+        written_count++;
     }
+
+    return written_count > 0U;
 }
 
 bool psoc_comm_read_status(uint8_t device_index, uint8_t *status_out)

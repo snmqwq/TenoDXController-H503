@@ -8,9 +8,7 @@
 #include "kb/keyboard_app.h"
 #include "led/mai2led_app.h"
 #include "status/status_led_app.h"
-#include "cdc_manager.h"
-#include "mai2touch.h"
-#include "tenodata.h"
+#include "touch/touch_app.h"
 #include "tim.h"
 #include "tusb.h"
 #include "led/ws2812b/ws2812b.h"
@@ -48,10 +46,8 @@ void app_init(void)
     });
 
     init_ok = tusb_init() && init_ok;
-    cdc_manager_init();
     aime_reader_app_init();
-    tenodata_init();
-    mai2touch_init();
+    touch_app_init();
     (void)button_app_set_long_press_callback(
         APP_IDLE_LIGHT_RESTORE_BUTTON,
         app_restore_idle_lights,
@@ -81,8 +77,7 @@ void app_task(void)
     status_led_app_task();
     tud_task();
     aime_reader_app_task();
-    tenodata_task();
-    mai2touch_task();
+    touch_app_task();
     button_app_task();
     keyboard_app_task();
     mai2led_app_task();

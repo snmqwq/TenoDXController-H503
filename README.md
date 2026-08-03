@@ -12,7 +12,7 @@
 | LED | 支持 Mai2LED 协议、灯珠数量配置和空闲灯效 |
 | Aime | 支持 PN532、FeliCa IDm 和 MIFARE 数据读取 |
 | Keyboard | 12 个按键、1P/2P 主按键布局和副按键键值配置 |
-| Config | 通过 Magic 协议修改灯光和键盘配置并保存到 Flash |
+| Config | 通过 Magic 协议修改触摸、灯光和键盘配置并保存到 Flash |
 | Status | 使用 PC13 指示初始化、运行、写入和错误状态 |
 
 ## 硬件接口
@@ -76,18 +76,29 @@ PC13 状态灯不区分 1P/2P 布局：
 
 ## 触摸数据
 
-I2C1 读取地址为 `0x08` 和 `0x09` 的两个 PSoC，并通过 CDC0 约每 16 ms 发送一帧。
+I2C1 读取地址为 `0x08` 和 `0x09` 的两个 PSoC。CDC0 约每 5 ms 发送一次当前快照；两个 PSoC 交替轮询，单个 PSoC 的数据约每 16 ms 更新一次。
 
 CDC0 帧固定为 70 字节：
 
 | 偏移 | 长度 | 内容 |
 | --- | ---: | --- |
-| 0 | 1 | 帧头 `00` |
+| 0 | 1 | 状态：正常运行时为 `00`，重新初始化或写入 PSoC 配置时为 `02`，校准阶段为当前 PSoC 状态 |
 | 1 | 34 | `0x08` 的 17 个 16-bit 通道，小端序 |
 | 35 | 34 | `0x09` 的 17 个 16-bit 通道，小端序 |
 | 69 | 1 | `sum(frame[0..68]) & 0xFF` |
 
 设备掉线后会自动重新检测；未连接设备对应的数据区域填充 `00`。通道映射和相关资料见 `ref/Touch_Algorithm/`。
+
+### 通道映射与扫描配置
+
+34 个物理通道按 `0..33` 编号，统一映射表的每项由 5 字节 Mai2Touch 区域掩码和 1 字节共用 `block` 组成：
+
+- 34-bit 区域掩码按小端序存放，位序依次为 `A1..A8` / `B1..B8` / `C1..C2` / `D1..D8` / `E1..E8`。
+- 一个物理通道可映射到多个区域，区域掩码也可为空，用于禁用该通道。
+- 多个物理通道可映射到同一区域；最终 Mai2Touch 输出对所有已触发通道的区域掩码执行 OR 合并。
+- `block` 只能为 `A` / `B` / `C` / `D` / `E`，同时供 Detector 选择判定逻辑和 PSoC 选择扫描参数。A–E 的扫描参数为固定档位，不通过 Magic 单独修改。
+
+更换映射表后，固件会立即清除旧触摸输出，安全等待当前 I2C 操作结束，再按完整 `init` 流程重新探测 PSoC、写入扫描配置、执行硬件校准并重置软件基线流程。Mai2Touch 模式会随后采集新基线；raw 模式下则在切换回 Mai2Touch 后开始采集。
 
 ## Aime 与 PN532
 
@@ -117,11 +128,21 @@ response = [AC, status, module, cmd, param, len, payload..., sum]
 | 模块 | 编号 | 功能 |
 | --- | ---: | --- |
 | global | `0x00` | 全局命令 |
-| touch | `0x10` | 保留 |
+| touch | `0x10` | 通道映射和 CDC0 输出模式 |
 | light | `0x20` | 灯珠数量和彩虹模式 |
 | keyboard | `0x40` | 1P/2P 布局和副按键键值 |
 
-`WRITE` 修改 RAM 配置，执行 `SAVE` 或 `SAVE_ALL` 后写入 Flash。Aime 和 button 不提供独立的 Magic 配置模块。
+Touch 模块参数：
+
+| 参数 | 读写 | 载荷 |
+| --- | --- | --- |
+| `0x01` | 读/写 | 204 字节完整映射表；按物理通道顺序排列 34 个 `[mask0..mask4, block]` 记录 |
+| `0x02` | 读/写 | 1 字节 CDC0 模式：`0` 为 PSoC raw，`1` 为 Mai2Touch |
+| `0x03` | 写 | 批量部分更新；每条 7 字节 `[channel, mask0..mask4, block]` |
+
+`0x03` 允许一次写入 1–34 个通道，同一批次不得重复指定物理通道。固件会先校验全部记录，再原子应用整批修改，并只触发一次完整重新初始化。Magic 单包载荷上限为 248 字节。
+
+Touch 的 Flash 及 `ALL` 序列化格式固定为 `[version=1, mode, mapping[204]]`，共 206 字节。`WRITE` 只修改 RAM 配置，执行 `SAVE` 或 `SAVE_ALL` 后才写入 Flash。Aime 和 button 不提供独立的 Magic 配置模块。
 
 ## Flash 配置
 
@@ -143,7 +164,21 @@ python -m pip install -r tools/requirements.txt
 python tools/magic_config_tool.py
 ```
 
-连接时选择 `TenoDX Aime Port`。工具支持灯光配置、1P/2P 布局、副按键键值、原始 Magic 请求和系统 DFU。
+连接时选择 `TenoDX Aime Port`。工具支持触摸映射与输出模式、灯光配置、1P/2P 布局、副按键键值、原始 Magic 请求和系统 DFU。
+
+常用触摸命令：
+
+```text
+touch get
+touch set 0 A1,C2,E4 A
+touch set 1 none B
+touch set-many 2 A2,D2 A 3 B3,E3 E
+touch mode
+touch mode mai2touch
+touch save
+```
+
+`touch set` 和 `touch set-many` 的区域列表使用逗号分隔，`none` 表示空映射；这些命令修改 RAM，需要再执行 `touch save` 才会持久化。
 
 常用键盘命令：
 
@@ -170,6 +205,15 @@ keyboard save
 3. 选择仓库根目录，不勾选 **Copy projects into workspace**。
 4. 选择 `Debug` 或 `Release` 配置并构建。
 
+构建完成后会保留 CubeIDE 的原始 BIN/HEX，并额外生成使用本地构建时间命名的副本：
+
+```text
+maimai_controller_H503_YYYYMMDD_HHMMSS.bin
+maimai_controller_H503_YYYYMMDD_HHMMSS.hex
+```
+
+同一次构建生成的 BIN 和 HEX 共用同一个时间戳，分别保存在当前 `Debug/` 或 `Release/` 目录。
+
 外设和引脚配置以 `maimai_controller_H503.ioc` 为准。
 
 ## 工程结构
@@ -178,12 +222,13 @@ keyboard save
 | --- | --- |
 | `App/` | 应用模块及统一的 `app_init()` / `app_task()` 入口 |
 | `App/aime/` | PN532、Aime 协议及 CDC2 分流 |
-| `App/config/` | Magic 命令及灯光、键盘配置 |
+| `App/config/` | Magic 命令及触摸、灯光、键盘配置 |
+| `App/touch/` | PSoC 通信、触摸判定、Mai2Touch、CDC0 路由及统一任务入口 |
 | `App/led/` | Mai2LED 控制 |
 | `App/button/` | 按键扫描与 MultiButton 封装 |
 | `App/kb/` | USB 键盘报告与键值管理 |
 | `App/status/` | PC13 状态灯 |
-| `Core/` | 外设初始化、中断和触摸模块 |
+| `Core/` | CubeMX 外设初始化、中断和 HAL 接入 |
 | `Drivers/` | STM32 HAL 与 CMSIS |
 | `tinyusb/` | TinyUSB 协议栈 |
 | `tools/` | 配置和测试工具 |

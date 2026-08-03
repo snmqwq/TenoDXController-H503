@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 void tenodata_init(void);
+void tenodata_request_reconfigure(void);
 void tenodata_task(void);
 
 #ifdef __cplusplus
