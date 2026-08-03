@@ -24,6 +24,13 @@ typedef struct
     uint8_t b;
 } RGB_t;
 
+typedef struct
+{
+    uint16_t buttons;
+    uint8_t base_phase;
+    bool enabled;
+} idle_rainbow_frame_t;
+
 typedef enum
 {
     LED_TX_STATE_IDLE = 0,
@@ -84,6 +91,8 @@ typedef struct
     RGB_t fade_now_color;
     uint32_t last_idle_update_tick;
     uint16_t idle_rainbow_loop;
+    idle_rainbow_frame_t output_rainbow;
+    idle_rainbow_frame_t active_rainbow;
     led_tx_state_t tx_state;
     led_tx_kind_t active_tx_kind;
     led_frame_kind_t pending_frame_kind;
@@ -101,6 +110,8 @@ typedef struct
 static mai2led_app_t app;
 static volatile bool led_tx_complete_event;
 static volatile bool led_tx_error_event;
+
+static uint32_t rgb_from_hsv(uint8_t h, uint8_t s, uint8_t v);
 
 static bool set_pixels_rgb(RGB_t *pixels,
                            uint16_t start_pixel,
@@ -288,6 +299,7 @@ static void queue_output_frame(led_frame_kind_t kind)
     app.pending_frame_kind = kind;
     app.pending_frame_generation = led_frame_kind_is_fade(kind) ?
                                    app.fade_generation : 0U;
+    memset(&app.output_rainbow, 0, sizeof(app.output_rainbow));
 }
 
 static void commit_staging_frame(led_frame_kind_t kind)
@@ -297,6 +309,22 @@ static void commit_staging_frame(led_frame_kind_t kind)
            sizeof(app.output_frame));
     app.staging_dirty_mask = 0U;
     queue_output_frame(kind);
+}
+
+static void commit_idle_rainbow_frame(
+    idle_rainbow_frame_t const *rainbow)
+{
+    if (rainbow == NULL)
+    {
+        return;
+    }
+
+    memcpy(app.output_frame,
+           app.staging_frame,
+           sizeof(app.output_frame));
+    app.staging_dirty_mask = 0U;
+    queue_output_frame(LED_FRAME_KIND_IDLE);
+    app.output_rainbow = *rainbow;
 }
 
 static void sync_unstaged_pixels_from(RGB_t const *frame)
@@ -322,6 +350,7 @@ static void restore_displayed_output(void)
     memcpy(app.output_frame,
            app.displayed_frame,
            sizeof(app.output_frame));
+    memset(&app.output_rainbow, 0, sizeof(app.output_rainbow));
     sync_unstaged_pixels_from(app.displayed_frame);
 }
 
@@ -374,7 +403,37 @@ static bool led_transport_render_frame(led_tx_kind_t kind)
         {
             uint8_t logical = (uint8_t)(pixel / app.active_led_per_bit);
 
-            color = app.active_frame[logical];
+            if (app.active_rainbow.enabled &&
+                (app.active_frame_kind == LED_FRAME_KIND_IDLE))
+            {
+                uint8_t phase = (uint8_t)(
+                    app.active_rainbow.base_phase +
+                    (((uint32_t)pixel * 256U) / active_total));
+                uint8_t saturation;
+                uint8_t value;
+                uint32_t packed_color;
+
+                if ((app.active_rainbow.buttons &
+                     (uint16_t)(1U << logical)) != 0U)
+                {
+                    saturation = IDLE_RAINBOW_PRESS_SATURATION;
+                    value = IDLE_RAINBOW_PRESS_VALUE;
+                }
+                else
+                {
+                    saturation = IDLE_RAINBOW_DIM_SATURATION;
+                    value = IDLE_RAINBOW_DIM_VALUE;
+                }
+
+                packed_color = rgb_from_hsv(phase, saturation, value);
+                color.r = (uint8_t)((packed_color >> 16) & 0xffU);
+                color.g = (uint8_t)((packed_color >> 8) & 0xffU);
+                color.b = (uint8_t)(packed_color & 0xffU);
+            }
+            else
+            {
+                color = app.active_frame[logical];
+            }
         }
 
         if (!WS2812B_SetPixel_RGB(led,
@@ -463,6 +522,7 @@ static void led_transport_enter_latch_wait(uint32_t now, bool success)
                 app.pending_frame_kind = app.active_frame_kind;
                 app.pending_frame_generation =
                     app.active_frame_generation;
+                app.output_rainbow = app.active_rainbow;
             }
             else if (led_frame_kind_is_fade(app.active_frame_kind) &&
                      (app.active_frame_generation != app.fade_generation))
@@ -474,6 +534,7 @@ static void led_transport_enter_latch_wait(uint32_t now, bool success)
         app.active_tx_kind = LED_TX_KIND_NONE;
         app.active_frame_kind = LED_FRAME_KIND_NONE;
         app.active_frame_generation = 0U;
+        memset(&app.active_rainbow, 0, sizeof(app.active_rainbow));
     }
 
     app.tx_state = LED_TX_STATE_LATCH_WAIT;
@@ -510,11 +571,13 @@ static void led_transport_start_frame(uint32_t now)
                sizeof(app.active_frame));
         app.active_frame_kind = app.pending_frame_kind;
         app.active_frame_generation = app.pending_frame_generation;
+        app.active_rainbow = app.output_rainbow;
     }
     else
     {
         app.active_frame_kind = LED_FRAME_KIND_NONE;
         app.active_frame_generation = 0U;
+        memset(&app.active_rainbow, 0, sizeof(app.active_rainbow));
     }
 
     if (!led_transport_render_frame(kind) || !WS2812B_Update(led))
@@ -523,6 +586,7 @@ static void led_transport_start_frame(uint32_t now)
         app.active_tx_kind = LED_TX_KIND_NONE;
         app.active_frame_kind = LED_FRAME_KIND_NONE;
         app.active_frame_generation = 0U;
+        memset(&app.active_rainbow, 0, sizeof(app.active_rainbow));
         app.tx_state = LED_TX_STATE_LATCH_WAIT;
         app.tx_latch_started_tick = now;
         return;
@@ -628,6 +692,7 @@ static void led_transport_task(void)
                 app.normal_frame_dirty = false;
                 app.pending_frame_kind = LED_FRAME_KIND_NONE;
                 app.pending_frame_generation = 0U;
+                memset(&app.output_rainbow, 0, sizeof(app.output_rainbow));
                 app.idle_lights_dirty = true;
                 app.last_idle_update_tick = now;
             }
@@ -640,6 +705,7 @@ static void led_transport_task(void)
         app.active_tx_kind = LED_TX_KIND_NONE;
         app.active_frame_kind = LED_FRAME_KIND_NONE;
         app.active_frame_generation = 0U;
+        memset(&app.active_rainbow, 0, sizeof(app.active_rainbow));
         app.tx_state = LED_TX_STATE_IDLE;
     }
 
@@ -659,6 +725,7 @@ void mai2led_app_mark_io_active(void)
         app.normal_frame_dirty = false;
         app.pending_frame_kind = LED_FRAME_KIND_NONE;
         app.pending_frame_generation = 0U;
+        memset(&app.output_rainbow, 0, sizeof(app.output_rainbow));
     }
 
     app.idle_lights_enabled = false;
@@ -773,23 +840,32 @@ static void set_idle_white_lights(void)
                          255U);
 }
 
-static void update_button_rainbow(void)
+static idle_rainbow_frame_t update_button_rainbow(void)
 {
-    uint16_t buttons = 0;
+    idle_rainbow_frame_t rainbow =
+    {
+        .buttons = 0U,
+        .base_phase = 0U,
+        .enabled = true
+    };
 
     if (app.config.button_read != NULL)
     {
-        buttons = app.config.button_read();
+        rainbow.buttons = app.config.button_read();
     }
 
     app.idle_rainbow_loop += IDLE_RAINBOW_STEP;
+    rainbow.base_phase = (uint8_t)(
+        app.idle_rainbow_loop / IDLE_RAINBOW_BUTTON_COUNT);
 
     for (uint8_t i = 0; i < IDLE_RAINBOW_BUTTON_COUNT; i++)
     {
-        uint8_t phase = (uint8_t)((((uint16_t)i * 256U) + app.idle_rainbow_loop) / IDLE_RAINBOW_BUTTON_COUNT);
+        uint8_t phase = (uint8_t)(
+            rainbow.base_phase +
+            (((uint16_t)i * 256U) / IDLE_RAINBOW_BUTTON_COUNT));
         uint32_t color;
 
-        if ((buttons & (uint16_t)(1U << i)) != 0U)
+        if ((rainbow.buttons & (uint16_t)(1U << i)) != 0U)
         {
             color = rgb_from_hsv(phase, IDLE_RAINBOW_PRESS_SATURATION, IDLE_RAINBOW_PRESS_VALUE);
         }
@@ -800,6 +876,8 @@ static void update_button_rainbow(void)
 
         set_button_rgb(i, color);
     }
+
+    return rainbow;
 }
 
 static void update_idle_button_lights(void)
@@ -832,8 +910,9 @@ static void update_idle_button_lights(void)
         return;
     }
 
-    update_button_rainbow();
-    commit_staging_frame(LED_FRAME_KIND_IDLE);
+    idle_rainbow_frame_t rainbow = update_button_rainbow();
+
+    commit_idle_rainbow_frame(&rainbow);
     app.idle_lights_dirty = false;
 }
 
