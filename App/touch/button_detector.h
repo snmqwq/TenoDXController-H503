@@ -4,25 +4,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// A区累积-导数双鉴算法状态机
 typedef struct {
-    // 通用
     bool is_pressed;
 
-    // A区状态
-    int a_max_diff;
-    int a_ring_buf[16];     // 滑动窗口环形缓冲
-    int a_ring_head;
-    int a_ring_tail;
-    int a_ring_count;
-    int a_ring_sum;
-    bool a_pending;
-    int a_confirm_cnt;
-    bool a_observing;
-    int a_observe_cnt;
-    int a_large_gate;
+    /* AquaMai A-zone detector state. */
+    int diff_deriv_down_count;
+    int up;
+    bool lock_releasing;
+    bool edge_holding;
+    int active_edge_min_diff;
 
-    // 历史记录 (16帧环形缓冲)
+    /* Sixteen-frame raw-value history. */
     int history[16];
     int history_idx;
     bool history_filled;

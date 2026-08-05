@@ -21,21 +21,6 @@ char detector_get_block(uint8_t physical_channel);
 #define DETECTOR_A_EDGE_DIFF_MIN_VALUES   { 200, 300, 400 }
 #define DETECTOR_A_EDGE_DIFF_MAX_VALUES   { 9999, 9999, 9999 }
 
-/* Compatibility values used by the previous A-zone detector. */
-#define DETECTOR_A_LARGE_SIGNAL_GATE      1
-#define DETECTOR_A_WINDOW_SIZE            8
-#define DETECTOR_A_TRIGGER_RATIO          1.8f
-#define DETECTOR_A_TRIGGER_DERIV          28
-#define DETECTOR_A_TRIGGER_DIFF_MIN       55
-#define DETECTOR_A_CONFIRM_FRAMES         10
-#define DETECTOR_A_CONFIRM_DIFF           200
-#define DETECTOR_A_RELEASE_FLOOR          35
-#define DETECTOR_A_RELEASE_RATIO          0.35f
-#define DETECTOR_A_SHARP_RELEASE_DERIV    (-40)
-#define DETECTOR_A_CRASH_WINDOW           7
-#define DETECTOR_A_CRASH_DERIV_THRESHOLD  (-8)
-#define DETECTOR_A_CRASH_DIFF_THRESHOLD   280
-
 /* AquaMai C-zone defaults. */
 #define DETECTOR_C_DIFF_THRESHOLD         25
 #define DETECTOR_C_DERIV_THRESHOLD        25
