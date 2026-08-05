@@ -8,6 +8,53 @@ static uint8_t connected_count = 0;
 static volatile bool transfer_complete = false;
 static volatile bool transfer_error = false;
 
+static bool probe_device(uint8_t device_index,
+                         uint32_t trials,
+                         uint32_t timeout_ms)
+{
+    if (device_index >= PSOC_COMM_DEVICE_COUNT)
+    {
+        return false;
+    }
+
+    if (HAL_I2C_IsDeviceReady(&hi2c1,
+                              devices[device_index].address << 1,
+                              trials,
+                              timeout_ms) == HAL_OK)
+    {
+        if (!devices[device_index].connected)
+        {
+            devices[device_index].connected = true;
+            connected_count++;
+        }
+        return true;
+    }
+
+    psoc_comm_mark_disconnected(device_index);
+    return false;
+}
+
+static void build_device_config(const uint8_t *config_payload_136,
+                                uint8_t device_index,
+                                uint8_t *psoc_cfg)
+{
+    uint8_t offset =
+        (uint8_t)(device_index * PSOC_COMM_CHANNELS_PER_DEVICE);
+
+    memcpy(&psoc_cfg[0],
+           &config_payload_136[0U + offset],
+           PSOC_COMM_CHANNELS_PER_DEVICE);
+    memcpy(&psoc_cfg[17],
+           &config_payload_136[34U + offset],
+           PSOC_COMM_CHANNELS_PER_DEVICE);
+    memcpy(&psoc_cfg[34],
+           &config_payload_136[68U + offset],
+           PSOC_COMM_CHANNELS_PER_DEVICE);
+    memcpy(&psoc_cfg[51],
+           &config_payload_136[102U + offset],
+           PSOC_COMM_CHANNELS_PER_DEVICE);
+}
+
 // ================= I2C 回调 =================
 void HAL_I2C_MemRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
@@ -37,21 +84,60 @@ void psoc_comm_init(void)
 
 uint8_t psoc_comm_probe(void)
 {
-    connected_count = 0;
     for (int i = 0; i < PSOC_COMM_DEVICE_COUNT; i++) {
-        if (HAL_I2C_IsDeviceReady(&hi2c1, devices[i].address << 1, 3, 10) == HAL_OK) {
-            devices[i].connected = true;
-            connected_count++;
-        } else {
-            devices[i].connected = false;
-        }
+        (void)psoc_comm_probe_device((uint8_t)i);
     }
     return connected_count;
+}
+
+bool psoc_comm_probe_device(uint8_t device_index)
+{
+    return probe_device(device_index, 3U, 10U);
+}
+
+bool psoc_comm_probe_device_quick(uint8_t device_index)
+{
+    return probe_device(device_index, 1U, 2U);
 }
 
 uint8_t psoc_comm_connected_count(void)
 {
     return connected_count;
+}
+
+uint8_t psoc_comm_get_connected_mask(void)
+{
+    uint8_t connected_mask = 0U;
+
+    for (uint8_t i = 0U; i < PSOC_COMM_DEVICE_COUNT; i++)
+    {
+        if (devices[i].connected)
+        {
+            connected_mask |= (uint8_t)(1U << i);
+        }
+    }
+
+    return connected_mask;
+}
+
+void psoc_comm_mark_disconnected(uint8_t device_index)
+{
+    if (device_index >= PSOC_COMM_DEVICE_COUNT)
+    {
+        return;
+    }
+
+    if (devices[device_index].connected)
+    {
+        devices[device_index].connected = false;
+        if (connected_count > 0U)
+        {
+            connected_count--;
+        }
+    }
+
+    memset(devices[device_index].raw, 0, sizeof(devices[device_index].raw));
+    memset(devices[device_index].rx_raw, 0, sizeof(devices[device_index].rx_raw));
 }
 
 const PsocDevice* psoc_comm_get_device(uint8_t index)
@@ -93,35 +179,81 @@ bool psoc_comm_write_config_and_calibrate(uint8_t device_index,
 
 bool psoc_comm_write_config_all(const uint8_t *config_payload_136)
 {
+    uint8_t target_mask = psoc_comm_get_connected_mask();
+
+    return (target_mask != 0U) &&
+           (psoc_comm_write_config_mask(config_payload_136, target_mask) ==
+            target_mask);
+}
+
+uint8_t psoc_comm_write_config_mask(const uint8_t *config_payload_136,
+                                    uint8_t device_mask)
+{
     uint8_t psoc_cfg[PSOC_COMM_CONFIG_LENGTH];
-    uint8_t written_count = 0U;
+    uint8_t written_mask = 0U;
 
     if (config_payload_136 == NULL)
+    {
+        return 0U;
+    }
+
+    for (uint8_t index = 0U;
+         index < PSOC_COMM_DEVICE_COUNT;
+         index++)
+    {
+        uint8_t mask = (uint8_t)(1U << index);
+
+        if (((device_mask & mask) == 0U) || !devices[index].connected)
+        {
+            continue;
+        }
+
+        build_device_config(config_payload_136, index, psoc_cfg);
+        if (psoc_comm_write_config_and_calibrate(index, psoc_cfg))
+        {
+            written_mask |= mask;
+        }
+    }
+
+    return written_mask;
+}
+
+bool psoc_comm_soft_reset(uint8_t device_index)
+{
+    uint8_t soft_reset_cmd = PSOC_COMMAND_SOFT_RESET;
+
+    if ((device_index >= PSOC_COMM_DEVICE_COUNT) ||
+        !devices[device_index].connected)
     {
         return false;
     }
 
-    for (int i = 0; i < PSOC_COMM_DEVICE_COUNT; i++) {
-        if (!devices[i].connected) continue;
+    return HAL_I2C_Mem_Write(&hi2c1,
+                             devices[device_index].address << 1,
+                             PSOC_EZI2C_OFFSET_STATUS,
+                             I2C_MEMADD_SIZE_8BIT,
+                             &soft_reset_cmd,
+                             1,
+                             10) == HAL_OK;
+}
 
-        // 拆包：上位机 136 字节 = 34×Res + 34×Mod + 34×Sns + 34×Div
-        // Device 0 取通道 0~16, Device 1 取通道 17~33
-        int offset = (i == 0) ? 0 : 17;
+uint8_t psoc_comm_soft_reset_all(void)
+{
+    uint8_t connected_mask = psoc_comm_get_connected_mask();
+    uint8_t reset_mask = 0U;
 
-        memcpy(&psoc_cfg[0],  &config_payload_136[0   + offset], 17); // Resolution
-        memcpy(&psoc_cfg[17], &config_payload_136[34  + offset], 17); // Mod IDAC
-        memcpy(&psoc_cfg[34], &config_payload_136[68  + offset], 17); // Sense Div
-        memcpy(&psoc_cfg[51], &config_payload_136[102 + offset], 17); // Mod Div
+    for (uint8_t i = 0U; i < PSOC_COMM_DEVICE_COUNT; i++)
+    {
+        uint8_t device_mask = (uint8_t)(1U << i);
 
-        if (!psoc_comm_write_config_and_calibrate((uint8_t)i, psoc_cfg))
+        if (((connected_mask & device_mask) != 0U) &&
+            psoc_comm_soft_reset(i))
         {
-            return false;
+            reset_mask |= device_mask;
         }
-
-        written_count++;
     }
 
-    return written_count > 0U;
+    return reset_mask;
 }
 
 bool psoc_comm_read_status(uint8_t device_index, uint8_t *status_out)
@@ -137,6 +269,14 @@ bool psoc_comm_read_status(uint8_t device_index, uint8_t *status_out)
 bool psoc_comm_is_bus_ready(void)
 {
     return HAL_I2C_GetState(&hi2c1) == HAL_I2C_STATE_READY;
+}
+
+void psoc_comm_recover_bus(void)
+{
+    (void)HAL_I2C_DeInit(&hi2c1);
+    MX_I2C1_Init();
+    transfer_complete = false;
+    transfer_error = false;
 }
 
 bool psoc_comm_start_async_read(uint8_t device_index)

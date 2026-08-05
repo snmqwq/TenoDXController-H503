@@ -1,11 +1,11 @@
 # Project-specific targets included by STM32CubeIDE generated makefiles.
 
-PYTHON ?= python
-FIRMWARE_STAMP_SCRIPT := ../tools/stamp_firmware.py
+POWERSHELL ?= powershell.exe
+FIRMWARE_STAMP_SCRIPT := ../tools/stamp_firmware.ps1
 
 .PHONY: timestamped-firmware
 
 timestamped-firmware: $(OBJCOPY_HEX) $(OBJCOPY_BIN) $(FIRMWARE_STAMP_SCRIPT)
-	$(PYTHON) "$(FIRMWARE_STAMP_SCRIPT)" --input-dir . --base-name "$(BUILD_ARTIFACT_NAME)"
+	$(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File "$(FIRMWARE_STAMP_SCRIPT)" -InputDir . -BaseName "$(BUILD_ARTIFACT_NAME)"
 
 secondary-outputs: timestamped-firmware

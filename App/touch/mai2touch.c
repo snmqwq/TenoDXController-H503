@@ -1,6 +1,7 @@
 #include "mai2touch.h"
 #include "cdc_manager.h"
 #include "main.h"
+#include "touch_pipeline.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -47,8 +48,10 @@ uint64_t* mai2touch_get_touch_bits(void) {
 // ================= 命令处理 =================
 
 static void mai2touch_cmd_rset(void) {
-    // 复位：清除触摸位，等待 {STAT}
-    touch_bits = 0;
+    /* Clear detector history while immediately restoring any regions forced
+     * by a missing PSoC. RSET must not leave those safety bits at zero.
+     */
+    touch_pipeline_reset_detection_state();
     sending = false;
 }
 

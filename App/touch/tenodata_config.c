@@ -9,23 +9,20 @@
 #define MAI2TOUCH_BASE_D  18U
 #define MAI2TOUCH_BASE_E  26U
 
-#define MAI2TOUCH_ZONE_MASK(zone, number) \
-    (1ULL << (MAI2TOUCH_BASE_##zone + (number) - 1U))
+#define MAI2TOUCH_ZONE_INDEX(zone, number) \
+    (MAI2TOUCH_BASE_##zone + (number) - 1U)
 
-#define CHANNEL_MAPPING(mask, scan_block)                                  \
-    {                                                                      \
-        {                                                                  \
-            (uint8_t)((mask) >> 0U),                                       \
-            (uint8_t)((mask) >> 8U),                                       \
-            (uint8_t)((mask) >> 16U),                                      \
-            (uint8_t)((mask) >> 24U),                                      \
-            (uint8_t)((mask) >> 32U)                                       \
-        },                                                                 \
-        (uint8_t)(scan_block)                                              \
+#define MAI2TOUCH_BLOCK_A  'A'
+#define MAI2TOUCH_BLOCK_B  'B'
+#define MAI2TOUCH_BLOCK_C  'C'
+#define MAI2TOUCH_BLOCK_D  'D'
+#define MAI2TOUCH_BLOCK_E  'E'
+
+#define DEFAULT_CHANNEL_MAPPING(zone, number)                  \
+    {                                                          \
+        (uint8_t)MAI2TOUCH_ZONE_INDEX(zone, number),            \
+        (uint8_t)MAI2TOUCH_BLOCK_##zone                         \
     }
-
-#define DEFAULT_CHANNEL_MAPPING(zone, number, scan_block) \
-    CHANNEL_MAPPING(MAI2TOUCH_ZONE_MASK(zone, number), scan_block)
 
 /*
  * The single source of truth for the default physical-channel mapping:
@@ -34,40 +31,40 @@
  */
 static TenodataChannelMapping const default_mapping[TENODATA_TOTAL_CHANNELS] =
 {
-    DEFAULT_CHANNEL_MAPPING(E, 4U, 'E'),
-    DEFAULT_CHANNEL_MAPPING(D, 4U, 'D'),
-    DEFAULT_CHANNEL_MAPPING(B, 3U, 'B'),
-    DEFAULT_CHANNEL_MAPPING(A, 3U, 'A'),
-    DEFAULT_CHANNEL_MAPPING(C, 1U, 'C'),
-    DEFAULT_CHANNEL_MAPPING(E, 3U, 'E'),
-    DEFAULT_CHANNEL_MAPPING(D, 3U, 'D'),
-    DEFAULT_CHANNEL_MAPPING(B, 2U, 'B'),
-    DEFAULT_CHANNEL_MAPPING(A, 2U, 'A'),
-    DEFAULT_CHANNEL_MAPPING(E, 2U, 'E'),
-    DEFAULT_CHANNEL_MAPPING(D, 2U, 'D'),
-    DEFAULT_CHANNEL_MAPPING(B, 1U, 'B'),
-    DEFAULT_CHANNEL_MAPPING(A, 1U, 'A'),
-    DEFAULT_CHANNEL_MAPPING(E, 1U, 'E'),
-    DEFAULT_CHANNEL_MAPPING(D, 1U, 'D'),
-    DEFAULT_CHANNEL_MAPPING(B, 8U, 'B'),
-    DEFAULT_CHANNEL_MAPPING(A, 8U, 'A'),
-    DEFAULT_CHANNEL_MAPPING(E, 8U, 'E'),
-    DEFAULT_CHANNEL_MAPPING(D, 8U, 'D'),
-    DEFAULT_CHANNEL_MAPPING(B, 7U, 'B'),
-    DEFAULT_CHANNEL_MAPPING(A, 7U, 'A'),
-    DEFAULT_CHANNEL_MAPPING(C, 2U, 'C'),
-    DEFAULT_CHANNEL_MAPPING(E, 7U, 'E'),
-    DEFAULT_CHANNEL_MAPPING(D, 7U, 'D'),
-    DEFAULT_CHANNEL_MAPPING(B, 6U, 'B'),
-    DEFAULT_CHANNEL_MAPPING(A, 6U, 'A'),
-    DEFAULT_CHANNEL_MAPPING(E, 6U, 'E'),
-    DEFAULT_CHANNEL_MAPPING(D, 6U, 'D'),
-    DEFAULT_CHANNEL_MAPPING(B, 5U, 'B'),
-    DEFAULT_CHANNEL_MAPPING(A, 5U, 'A'),
-    DEFAULT_CHANNEL_MAPPING(E, 5U, 'E'),
-    DEFAULT_CHANNEL_MAPPING(D, 5U, 'D'),
-    DEFAULT_CHANNEL_MAPPING(B, 4U, 'B'),
-    DEFAULT_CHANNEL_MAPPING(A, 4U, 'A')
+    DEFAULT_CHANNEL_MAPPING(E, 4U),
+    DEFAULT_CHANNEL_MAPPING(D, 4U),
+    DEFAULT_CHANNEL_MAPPING(B, 3U),
+    DEFAULT_CHANNEL_MAPPING(A, 3U),
+    DEFAULT_CHANNEL_MAPPING(C, 1U),
+    DEFAULT_CHANNEL_MAPPING(E, 3U),
+    DEFAULT_CHANNEL_MAPPING(D, 3U),
+    DEFAULT_CHANNEL_MAPPING(B, 2U),
+    DEFAULT_CHANNEL_MAPPING(A, 2U),
+    DEFAULT_CHANNEL_MAPPING(E, 2U),
+    DEFAULT_CHANNEL_MAPPING(D, 2U),
+    DEFAULT_CHANNEL_MAPPING(B, 1U),
+    DEFAULT_CHANNEL_MAPPING(A, 1U),
+    DEFAULT_CHANNEL_MAPPING(E, 1U),
+    DEFAULT_CHANNEL_MAPPING(D, 1U),
+    DEFAULT_CHANNEL_MAPPING(B, 8U),
+    DEFAULT_CHANNEL_MAPPING(A, 8U),
+    DEFAULT_CHANNEL_MAPPING(E, 8U),
+    DEFAULT_CHANNEL_MAPPING(D, 8U),
+    DEFAULT_CHANNEL_MAPPING(B, 7U),
+    DEFAULT_CHANNEL_MAPPING(A, 7U),
+    DEFAULT_CHANNEL_MAPPING(C, 2U),
+    DEFAULT_CHANNEL_MAPPING(E, 7U),
+    DEFAULT_CHANNEL_MAPPING(D, 7U),
+    DEFAULT_CHANNEL_MAPPING(B, 6U),
+    DEFAULT_CHANNEL_MAPPING(A, 6U),
+    DEFAULT_CHANNEL_MAPPING(E, 6U),
+    DEFAULT_CHANNEL_MAPPING(D, 6U),
+    DEFAULT_CHANNEL_MAPPING(B, 5U),
+    DEFAULT_CHANNEL_MAPPING(A, 5U),
+    DEFAULT_CHANNEL_MAPPING(E, 5U),
+    DEFAULT_CHANNEL_MAPPING(D, 5U),
+    DEFAULT_CHANNEL_MAPPING(B, 4U),
+    DEFAULT_CHANNEL_MAPPING(A, 4U)
 };
 
 static TenodataChannelMapping configured_mapping[TENODATA_TOTAL_CHANNELS];
@@ -83,52 +80,37 @@ static TenodataChannelConfig const block_profiles[5] =
     {  8U,  8U, 2U, 2U }  /* E */
 };
 
-_Static_assert(sizeof(TenodataChannelMapping) == 6U,
-               "Touch channel mapping wire entry must be six bytes");
+_Static_assert(sizeof(TenodataChannelMapping) == 2U,
+               "Touch channel mapping wire entry must be two bytes");
 
 static bool block_is_valid(uint8_t block)
 {
     return (block >= (uint8_t)'A') && (block <= (uint8_t)'E');
 }
 
-uint64_t tenodata_config_mapping_get_mask(
-    TenodataChannelMapping const *mapping)
+static uint8_t block_for_region(uint8_t region)
 {
-    uint64_t mask = 0U;
-
-    if (mapping == NULL)
+    if (region < MAI2TOUCH_BASE_B)
     {
-        return 0U;
+        return (uint8_t)'A';
     }
-
-    for (uint8_t index = 0U;
-         index < TENODATA_MAI2TOUCH_MASK_BYTES;
-         index++)
+    if (region < MAI2TOUCH_BASE_C)
     {
-        mask |= (uint64_t)mapping->mai2touch_mask[index] << (index * 8U);
+        return (uint8_t)'B';
     }
-
-    return mask;
-}
-
-bool tenodata_config_mapping_set_mask(TenodataChannelMapping *mapping,
-                                      uint64_t mask)
-{
-    if ((mapping == NULL) ||
-        ((mask & ~TENODATA_MAI2TOUCH_VALID_MASK) != 0U))
+    if (region < MAI2TOUCH_BASE_D)
     {
-        return false;
+        return (uint8_t)'C';
     }
-
-    for (uint8_t index = 0U;
-         index < TENODATA_MAI2TOUCH_MASK_BYTES;
-         index++)
+    if (region < MAI2TOUCH_BASE_E)
     {
-        mapping->mai2touch_mask[index] =
-            (uint8_t)(mask >> (index * 8U));
+        return (uint8_t)'D';
     }
-
-    return true;
+    if (region < TENODATA_MAI2TOUCH_REGION_COUNT)
+    {
+        return (uint8_t)'E';
+    }
+    return 0U;
 }
 
 bool tenodata_config_validate_mapping(TenodataChannelMapping const *mapping,
@@ -141,9 +123,12 @@ bool tenodata_config_validate_mapping(TenodataChannelMapping const *mapping,
 
     for (uint8_t channel = 0U; channel < TENODATA_TOTAL_CHANNELS; channel++)
     {
-        if (!block_is_valid(mapping[channel].block) ||
-            ((tenodata_config_mapping_get_mask(&mapping[channel]) &
-              ~TENODATA_MAI2TOUCH_VALID_MASK) != 0U))
+        uint8_t region = mapping[channel].mai2touch_region;
+        uint8_t block = mapping[channel].block;
+
+        if (!block_is_valid(block) ||
+            (region >= TENODATA_MAI2TOUCH_REGION_COUNT) ||
+            (block != block_for_region(region)))
         {
             return false;
         }
@@ -206,24 +191,27 @@ bool tenodata_config_get_channel_mapping(uint8_t channel,
     return true;
 }
 
-uint64_t tenodata_config_get_mai2touch_mask(uint8_t channel)
+uint8_t tenodata_config_get_mai2touch_region(uint8_t channel)
 {
     if (channel >= TENODATA_TOTAL_CHANNELS)
     {
-        return 0U;
+        return TENODATA_MAI2TOUCH_INVALID_REGION;
     }
 
-    return tenodata_config_mapping_get_mask(&active_mapping[channel]);
+    return active_mapping[channel].mai2touch_region;
 }
 
 char tenodata_config_get_block(uint8_t channel)
 {
+    uint8_t block;
+
     if (channel >= TENODATA_TOTAL_CHANNELS)
     {
         return (char)0xff;
     }
 
-    return (char)active_mapping[channel].block;
+    block = block_for_region(active_mapping[channel].mai2touch_region);
+    return block_is_valid(block) ? (char)block : (char)0xff;
 }
 
 TenodataChannelConfig tenodata_config_get_channel(uint8_t channel)
@@ -236,7 +224,7 @@ TenodataChannelConfig tenodata_config_get_channel(uint8_t channel)
         return zero;
     }
 
-    block = active_mapping[channel].block;
+    block = (uint8_t)tenodata_config_get_block(channel);
     if (!block_is_valid(block))
     {
         return zero;

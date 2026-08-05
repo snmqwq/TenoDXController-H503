@@ -13,7 +13,7 @@
 
 #define TOUCH_CDC_MODE_RAW                0U
 #define TOUCH_CDC_MODE_MAI2TOUCH          1U
-#define TOUCH_PAYLOAD_VERSION             1U
+#define TOUCH_PAYLOAD_VERSION             2U
 
 #define TOUCH_MAPPING_PAYLOAD_LENGTH \
     (TENODATA_TOTAL_CHANNELS * sizeof(TenodataChannelMapping))
@@ -27,17 +27,17 @@ typedef struct
     uint8_t mapping[TOUCH_MAPPING_PAYLOAD_LENGTH];
 } touch_config_payload_t;
 
-_Static_assert(sizeof(TenodataChannelMapping) == 6U,
-               "Touch mapping wire entry must be six bytes");
-_Static_assert(TOUCH_MAPPING_PAYLOAD_LENGTH == 204U,
-               "Touch mapping payload must be 204 bytes");
-_Static_assert(TOUCH_BATCH_RECORD_LENGTH == 7U,
-               "Touch batch record must be seven bytes");
-_Static_assert(sizeof(touch_config_payload_t) == 206U,
-               "Touch all/Flash payload must be 206 bytes");
+_Static_assert(sizeof(TenodataChannelMapping) == 2U,
+               "Touch mapping wire entry must be two bytes");
+_Static_assert(TOUCH_MAPPING_PAYLOAD_LENGTH == 68U,
+               "Touch mapping payload must be 68 bytes");
+_Static_assert(TOUCH_BATCH_RECORD_LENGTH == 3U,
+               "Touch batch record must be three bytes");
+_Static_assert(sizeof(touch_config_payload_t) == 70U,
+               "Touch all/Flash payload must be 70 bytes");
 
 /* Magic callbacks run synchronously from the main loop, so shared work
- * buffers avoid placing several 204/206-byte objects on the MCU stack.
+ * buffers avoid placing several mapping objects on the MCU stack.
  */
 static TenodataChannelMapping
     mapping_buffer[TENODATA_TOTAL_CHANNELS];

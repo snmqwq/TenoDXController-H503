@@ -19,6 +19,7 @@
 #define PSOC_STATUS_CRASH               0x00U
 #define PSOC_STATUS_START_CALIBRATION   0x01U
 #define PSOC_STATUS_CALIBRATION_DONE    0x02U
+#define PSOC_COMMAND_SOFT_RESET         0xADU
 
 // ================= 类型 =================
 typedef struct {
@@ -36,8 +37,20 @@ void psoc_comm_init(void);
 // 探测 I2C 总线，返回已发现的 PSoC 数量
 uint8_t psoc_comm_probe(void);
 
+// 探测指定 PSoC，并同步连接状态和已连接设备数
+bool psoc_comm_probe_device(uint8_t device_index);
+
+// 运行中快速探测指定 PSoC，避免长时间阻塞在线设备采样
+bool psoc_comm_probe_device_quick(uint8_t device_index);
+
 // 获取已连接设备数
 uint8_t psoc_comm_connected_count(void);
+
+// 获取连接状态位掩码，bit n 对应设备 n
+uint8_t psoc_comm_get_connected_mask(void);
+
+// 标记指定 PSoC 离线，并清空该设备的接收数据
+void psoc_comm_mark_disconnected(uint8_t device_index);
 
 // 获取指定设备的指针 (供外部直接读取 raw 数据)
 const PsocDevice* psoc_comm_get_device(uint8_t index);
@@ -50,11 +63,24 @@ bool psoc_comm_write_config_and_calibrate(uint8_t device_index,
 // config_payload_136: 34×Res + 34×Mod + 34×Sns + 34×Div
 bool psoc_comm_write_config_all(const uint8_t *config_payload_136);
 
+// 仅配置 device_mask 指定的设备，返回成功设备位掩码
+uint8_t psoc_comm_write_config_mask(const uint8_t *config_payload_136,
+                                    uint8_t device_mask);
+
+// 向指定 PSoC 的状态偏移写入软复位命令
+bool psoc_comm_soft_reset(uint8_t device_index);
+
+// 尝试复位所有当前已连接设备，返回成功设备位掩码
+uint8_t psoc_comm_soft_reset_all(void);
+
 // 读取 PSoC 状态 (阻塞)
 bool psoc_comm_read_status(uint8_t device_index, uint8_t *status_out);
 
 // 检查 I2C 总线是否空闲
 bool psoc_comm_is_bus_ready(void);
+
+// 中止异常事务并重新初始化 I2C1 外设
+void psoc_comm_recover_bus(void);
 
 // 启动异步 I2C 数据读取 (交替轮询用)
 bool psoc_comm_start_async_read(uint8_t device_index);

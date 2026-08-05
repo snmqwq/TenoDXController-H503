@@ -63,8 +63,7 @@ TOUCH_PARAM_MODE = 0x02
 TOUCH_PARAM_BATCH_MAP = 0x03
 TOUCH_CHANNEL_COUNT = 34
 TOUCH_ZONE_COUNT = 34
-TOUCH_MASK_BYTES = 5
-TOUCH_MAP_ENTRY_SIZE = TOUCH_MASK_BYTES + 1
+TOUCH_MAP_ENTRY_SIZE = 2
 TOUCH_BATCH_RECORD_SIZE = 1 + TOUCH_MAP_ENTRY_SIZE
 TOUCH_MODE_RAW = 0
 TOUCH_MODE_MAI2TOUCH = 1
@@ -73,7 +72,6 @@ TOUCH_MODE_VALUES = {
     "mai2touch": TOUCH_MODE_MAI2TOUCH,
 }
 TOUCH_MODE_NAMES = {value: name for name, value in TOUCH_MODE_VALUES.items()}
-TOUCH_BLOCKS = "ABCDE"
 TOUCH_ZONE_NAMES = tuple(
     [f"A{number}" for number in range(1, 9)]
     + [f"B{number}" for number in range(1, 9)]
@@ -81,7 +79,7 @@ TOUCH_ZONE_NAMES = tuple(
     + [f"D{number}" for number in range(1, 9)]
     + [f"E{number}" for number in range(1, 9)]
 )
-TOUCH_ZONE_BITS = {name: bit for bit, name in enumerate(TOUCH_ZONE_NAMES)}
+TOUCH_ZONE_INDICES = {name: index for index, name in enumerate(TOUCH_ZONE_NAMES)}
 
 GLOBAL_MODULE = 0x00
 GLOBAL_PARAM_ALL = 0x00
@@ -190,8 +188,26 @@ class MagicResponse:
 
 @dataclasses.dataclass(frozen=True)
 class TouchMapEntry:
-    zone_mask: int
-    block: str
+    zone: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.zone, str):
+            raise TypeError("touch zone must be a string")
+        zone = self.zone.strip().upper()
+        if zone not in TOUCH_ZONE_INDICES:
+            raise ValueError(
+                f"unknown touch zone {self.zone!r}; use A1..A8, B1..B8, "
+                "C1..C2, D1..D8, or E1..E8"
+            )
+        object.__setattr__(self, "zone", zone)
+
+    @property
+    def region(self) -> int:
+        return TOUCH_ZONE_INDICES[self.zone]
+
+    @property
+    def block(self) -> str:
+        return self.zone[0]
 
 
 def parse_touch_channel(text: str) -> int:
@@ -204,59 +220,19 @@ def parse_touch_channel(text: str) -> int:
     return channel
 
 
-def parse_touch_block(text: str) -> str:
-    block = text.strip().upper()
-    if block not in TOUCH_BLOCKS or len(block) != 1:
-        raise ValueError("block must be A, B, C, D, or E")
-    return block
-
-
-def validate_touch_zone_mask(zone_mask: int) -> int:
-    if not isinstance(zone_mask, int) or not 0 <= zone_mask < (1 << TOUCH_ZONE_COUNT):
-        raise ValueError("touch zone mask must contain only bits 0..33")
-    return zone_mask
-
-
-def parse_touch_zones(text: str) -> int:
-    value = text.strip()
-    if value.lower() == "none":
-        return 0
-    if not value:
-        raise ValueError("zones must be a comma-separated list such as A1,C2, or none")
-
-    zone_mask = 0
-    for item in value.split(","):
-        zone = item.strip().upper()
-        if zone not in TOUCH_ZONE_BITS:
-            raise ValueError(
-                f"unknown touch zone {item!r}; use A1..A8, B1..B8, "
-                "C1..C2, D1..D8, E1..E8, or none"
-            )
-        bit = TOUCH_ZONE_BITS[zone]
-        if zone_mask & (1 << bit):
-            raise ValueError(f"touch zone {zone} is repeated")
-        zone_mask |= 1 << bit
-    return zone_mask
-
-
-def format_touch_zones(zone_mask: int) -> str:
-    validate_touch_zone_mask(zone_mask)
-    if zone_mask == 0:
-        return "none"
-    return ",".join(
-        name for bit, name in enumerate(TOUCH_ZONE_NAMES) if zone_mask & (1 << bit)
-    )
+def parse_touch_zone(text: str) -> str:
+    return TouchMapEntry(text).zone
 
 
 def validate_touch_map_entry(entry: TouchMapEntry) -> TouchMapEntry:
-    validate_touch_zone_mask(entry.zone_mask)
-    parse_touch_block(entry.block)
+    if not isinstance(entry, TouchMapEntry):
+        raise TypeError("touch map entry must be TouchMapEntry")
     return entry
 
 
 def encode_touch_map_entry(entry: TouchMapEntry) -> bytes:
     validate_touch_map_entry(entry)
-    return entry.zone_mask.to_bytes(TOUCH_MASK_BYTES, "little") + entry.block.upper().encode("ascii")
+    return bytes((entry.region, ord(entry.block)))
 
 
 def decode_touch_map_entry(payload: bytes) -> TouchMapEntry:
@@ -264,12 +240,15 @@ def decode_touch_map_entry(payload: bytes) -> TouchMapEntry:
         raise ValueError(
             f"touch map entry must be {TOUCH_MAP_ENTRY_SIZE} bytes, got {len(payload)}"
         )
-    entry = TouchMapEntry(
-        zone_mask=int.from_bytes(payload[:TOUCH_MASK_BYTES], "little"),
-        block=chr(payload[TOUCH_MASK_BYTES]),
-    )
-    validate_touch_map_entry(entry)
-    return TouchMapEntry(entry.zone_mask, entry.block.upper())
+    region = payload[0]
+    if region >= TOUCH_ZONE_COUNT:
+        raise ValueError(f"touch region must be 0..33, got {region}")
+    entry = TouchMapEntry(TOUCH_ZONE_NAMES[region])
+    if payload[1] != ord(entry.block):
+        raise ValueError(
+            f"touch block 0x{payload[1]:02X} does not match zone {entry.zone}"
+        )
+    return entry
 
 
 def encode_touch_full_map(entries: list[TouchMapEntry]) -> bytes:
@@ -336,19 +315,16 @@ def decode_touch_batch(payload: bytes) -> list[tuple[int, TouchMapEntry]]:
 
 
 def parse_touch_batch_args(argv: list[str]) -> list[tuple[int, TouchMapEntry]]:
-    if not argv or len(argv) % 3 != 0:
+    if not argv or len(argv) % 2 != 0:
         raise ValueError(
-            "set-many requires one or more groups: <channel> <zones|none> <block>"
+            "set-many requires one or more groups: <channel> <zone>"
         )
     records = []
-    for offset in range(0, len(argv), 3):
+    for offset in range(0, len(argv), 2):
         records.append(
             (
                 parse_touch_channel(argv[offset]),
-                TouchMapEntry(
-                    parse_touch_zones(argv[offset + 1]),
-                    parse_touch_block(argv[offset + 2]),
-                ),
+                TouchMapEntry(parse_touch_zone(argv[offset + 1])),
             )
         )
     # Encoding performs the final record-count and duplicate-channel validation.
@@ -737,7 +713,7 @@ def show_touch_map(client: MagicConfigClient) -> None:
     print("\nTouch channel map")
     for channel, entry in enumerate(entries):
         print(
-            f"  channel {channel:2}: zones={format_touch_zones(entry.zone_mask):<24} "
+            f"  channel {channel:2}: zone={entry.zone:<3} "
             f"block={entry.block}"
         )
 
@@ -763,8 +739,8 @@ def print_general_help() -> None:
   keyboard set EK_1 a
   keyboard set-all 3 kp_multiply 8 9
   keyboard layout 2p
-  touch set 0 A1,C2 E
-  touch set-many 0 A1,C2 E 1 none D
+  touch set 0 A1
+  touch set-many 0 A1 1 A1
   touch mode mai2touch
   raw light read 0x01
 """.strip()
@@ -827,10 +803,9 @@ def print_touch_help() -> None:
         """
 touch 命令:
   touch get                   读取全部 34 个物理通道的区域映射和共用 block
-  touch set <channel> <zones|none> <block>
-                              修改一个通道；zones 使用逗号分隔，例如 A1,C2,E4
-  touch set-many <channel> <zones|none> <block> [...]
-                              按三元组一次修改多个通道，同批通道不可重复
+  touch set <channel> <zone>  修改一个通道；block 由 zone 自动确定
+  touch set-many <channel> <zone> [...]
+                              按二元组一次修改多个通道，同批通道不可重复
   touch mode                  读取 CDC0 输出模式
   touch mode <raw|mai2touch>  设置 CDC0 输出模式
   touch save                  保存当前 Touch 配置到 Flash
@@ -838,14 +813,14 @@ touch 命令:
   touch info                  读取固件暴露的 Touch 参数列表
 
 区域:
-  A1..A8、B1..B8、C1..C2、D1..D8、E1..E8；none 表示不映射区域。
-  一个物理通道可映射多个区域，多个物理通道也可映射同一区域。
+  A1..A8、B1..B8、C1..C2、D1..D8、E1..E8。
+  每个物理通道必须且只能映射一个区域；多个物理通道可映射同一区域。
   set/set-many 只修改 RAM；需要执行 touch save 才会持久化。
 
 示例:
-  touch set 0 A1,C2,E4 E
-  touch set 1 none D
-  touch set-many 0 A1,C2 E 1 none D 12 B4,B5 B
+  touch set 0 A1
+  touch set 1 D4
+  touch set-many 0 A1 1 A1 12 B4
   touch mode mai2touch
 """.strip()
     )
@@ -1098,9 +1073,9 @@ def cmd_touch(client: MagicConfigClient, argv: list[str]) -> None:
         return
 
     if command == "set":
-        if len(argv) != 4:
+        if len(argv) != 3:
             command_error(
-                "touch set 需要参数: <channel> <zones|none> <block>",
+                "touch set 需要参数: <channel> <zone>",
                 "touch",
             )
             return
@@ -1120,7 +1095,7 @@ def cmd_touch(client: MagicConfigClient, argv: list[str]) -> None:
         if response and response.ok:
             channel, entry = records[0]
             print(
-                f"channel {channel}: zones={format_touch_zones(entry.zone_mask)} "
+                f"channel {channel}: zone={entry.zone} "
                 f"block={entry.block}"
             )
         return
