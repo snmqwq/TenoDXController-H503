@@ -1,45 +1,80 @@
 #include "button_detector.h"
 #include "button_detector_config.h"
 
+#include <math.h>
 #include <string.h>
 
-static const int a_edge_deriv_min[DETECTOR_A_EDGE_TRIGGER_COUNT] =
-    DETECTOR_A_EDGE_DERIV_MIN_VALUES;
-static const int a_edge_deriv_max[DETECTOR_A_EDGE_TRIGGER_COUNT] =
-    DETECTOR_A_EDGE_DERIV_MAX_VALUES;
-static const int a_edge_diff_min[DETECTOR_A_EDGE_TRIGGER_COUNT] =
-    DETECTOR_A_EDGE_DIFF_MIN_VALUES;
-static const int a_edge_diff_max[DETECTOR_A_EDGE_TRIGGER_COUNT] =
-    DETECTOR_A_EDGE_DIFF_MAX_VALUES;
+#define DETECTOR_HISTORY_SIZE 16
+
+#if defined(DEBUG) && defined(__GNUC__)
+#define DETECTOR_SIZE_OPTIMIZED __attribute__((optimize("Os")))
+#else
+#define DETECTOR_SIZE_OPTIMIZED
+#endif
+
+static int max_int(int left, int right)
+{
+    return (left > right) ? left : right;
+}
+
+static float max_float(float left, float right)
+{
+    return (left > right) ? left : right;
+}
+
+static void a_clear_fast_pending(ButtonDetector *d)
+{
+    d->a_fast_pending = false;
+    d->a_pending_peak = 0.0f;
+}
+
+static void a_accept_press(ButtonDetector *d, float peak)
+{
+    d->a_peak = peak;
+    d->a_after_release = false;
+    d->a_valley_valid = false;
+    a_clear_fast_pending(d);
+}
 
 static int history_get(ButtonDetector *d, int frames_ago)
 {
-    if (!d->history_filled)
+    if (d->history_count <= 0)
     {
-        return d->history[0];
+        return 0;
     }
 
-    int index = (d->history_idx - 1 - frames_ago + 16) % 16;
+    int available_ago = frames_ago;
+    if (available_ago > d->history_count - 1)
+    {
+        available_ago = d->history_count - 1;
+    }
+
+    int index = d->history_idx - 1 - available_ago;
+    while (index < 0)
+    {
+        index += DETECTOR_HISTORY_SIZE;
+    }
+
     return d->history[index];
 }
 
 static void history_push(ButtonDetector *d, int value)
 {
     d->history[d->history_idx] = value;
-    d->history_idx = (d->history_idx + 1) % 16;
-    if (d->history_idx == 0)
+    d->history_idx = (d->history_idx + 1) % DETECTOR_HISTORY_SIZE;
+
+    if (d->history_count < DETECTOR_HISTORY_SIZE)
     {
-        d->history_filled = true;
+        d->history_count++;
     }
 }
 
 void detector_reset(ButtonDetector *d)
 {
     memset(d, 0, sizeof(*d));
-    d->diff_deriv_down_count = -1;
-    d->active_edge_min_diff = 300;
 }
 
+DETECTOR_SIZE_OPTIMIZED
 bool detector_process_frame(ButtonDetector *d,
                             uint8_t phys_ch,
                             int current_val,
@@ -47,166 +82,189 @@ bool detector_process_frame(ButtonDetector *d,
 {
     char block = detector_get_block(phys_ch);
     int diff = current_val - setup_raw;
-    int diff_deriv = current_val - history_get(d, 0);
-    int diff_deriv_2 = current_val - history_get(d, 1);
-    int diff_deriv_3 = current_val - history_get(d, 2);
+    int diff_deriv = (d->history_count > 0)
+        ? current_val - history_get(d, 0)
+        : 0;
     bool on = false;
 
     if (block == 'A')
     {
-        int on_default_diff = DETECTOR_A_TRIGGER_SENSITIVITY;
-        int matched_min_diff = d->active_edge_min_diff;
-        bool is_fast_edge_strike = false;
+        float raw = (float)current_val;
+        int deriv = diff_deriv;
 
-        on = d->is_pressed;
-
-        for (uint32_t i = 0U; i < DETECTOR_A_EDGE_TRIGGER_COUNT; i++)
+        if (!d->a_baseline_initialized)
         {
-            bool deriv_matches =
-                (diff_deriv >= a_edge_deriv_min[i]) &&
-                (diff_deriv <= a_edge_deriv_max[i]);
-            bool diff_matches =
-                (diff >= a_edge_diff_min[i]) &&
-                (diff <= a_edge_diff_max[i]);
+            d->a_baseline = (float)setup_raw;
+            d->a_baseline_initialized = true;
+            d->a_peak = 0.0f;
+            d->a_after_release = false;
+            d->a_valley_raw = raw;
+            d->a_valley_valid = true;
+            a_clear_fast_pending(d);
+        }
 
-            if (deriv_matches && diff_matches)
+        float signal = raw - d->a_baseline;
+        int edge_on = DETECTOR_A_EDGE_ON;
+        int large_on = max_int(edge_on + 1, DETECTOR_A_LARGE_ON);
+
+        if (d->is_pressed)
+        {
+            if (signal > d->a_peak)
             {
-                is_fast_edge_strike = true;
-                matched_min_diff = a_edge_diff_min[i];
-                break;
+                d->a_peak = signal;
             }
-        }
 
-        if (is_fast_edge_strike)
-        {
-            d->edge_holding = true;
-            d->active_edge_min_diff = matched_min_diff;
-        }
-        else if ((diff < d->active_edge_min_diff - 50) || !d->is_pressed)
-        {
-            d->edge_holding = false;
-        }
+            float peak_drop = d->a_peak - signal;
+            float required_drop = max_float(
+                (float)DETECTOR_A_RELEASE_MIN_DROP,
+                d->a_peak * DETECTOR_A_RELEASE_DROP_RATIO);
+            bool gesture_release =
+                (deriv <= DETECTOR_A_RELEASE_DERIV) &&
+                (peak_drop >= required_drop) &&
+                (signal <= d->a_peak * DETECTOR_A_RELEASE_PEAK_RATIO);
+            bool clean_release = signal <= DETECTOR_A_CLEAN_RELEASE;
 
-        if ((diff > on_default_diff + 400) ||
-            (diff < on_default_diff - 400))
-        {
-            d->up = 0;
-        }
-
-        int on_diff = on_default_diff;
-        int last_diff = history_get(d, 0) - setup_raw;
-
-        if ((last_diff < on_default_diff) && (diff >= on_default_diff))
-        {
-            d->up = 1;
-        }
-        else if ((last_diff >= on_default_diff) && (diff < on_default_diff))
-        {
-            d->up = -1;
-        }
-
-        switch (d->up)
-        {
-            case 1:
-                on_diff = DETECTOR_A_HOLD_THRESHOLD;
-                break;
-            case -1:
-                on_diff = 800;
-                break;
-            default:
-                on_diff = on_default_diff;
-                break;
-        }
-
-        if (d->edge_holding && (d->active_edge_min_diff < on_diff))
-        {
-            on_diff = d->active_edge_min_diff;
-        }
-
-        if (diff < 200)
-        {
-            d->lock_releasing = false;
-        }
-
-        if ((d->lock_releasing && (diff_deriv > 150) && (diff > on_diff)) ||
-            (diff > on_diff * 1.5f) || is_fast_edge_strike)
-        {
-            d->lock_releasing = false;
-        }
-
-        if (((diff_deriv > 150) && (diff > on_diff)) ||
-            (diff > on_diff * 1.5f) || is_fast_edge_strike)
-        {
-            d->lock_releasing = false;
-            d->diff_deriv_down_count = 0;
-        }
-
-        if ((diff > on_diff) || is_fast_edge_strike)
-        {
-            if (d->diff_deriv_down_count > 0)
+            if (clean_release || gesture_release)
             {
-                d->diff_deriv_down_count--;
+                on = false;
+                d->a_after_release = true;
+                d->a_valley_raw = raw;
+                d->a_valley_valid = true;
+                d->a_peak = 0.0f;
+                a_clear_fast_pending(d);
             }
-            else if (!d->lock_releasing)
+            else
             {
-                bool hovering =
-                    !d->is_pressed &&
-                    (diff_deriv < DETECTOR_A_HOVER_SPEED_MAX) &&
-                    (diff < DETECTOR_A_HOVER_DIFF_MAX) &&
-                    !is_fast_edge_strike;
-
-                if (!hovering)
-                {
-                    on = true;
-                }
+                on = true;
             }
         }
         else
         {
-            if (d->diff_deriv_down_count > 0)
+            if (!d->a_valley_valid)
             {
-                d->diff_deriv_down_count--;
+                d->a_valley_raw = raw;
+                d->a_valley_valid = true;
             }
-            if (d->is_pressed && (diff > 200))
+            else if (raw < d->a_valley_raw)
             {
-                d->lock_releasing = true;
+                d->a_valley_raw = raw;
             }
-            on = false;
-        }
 
-        int deriv_down = DETECTOR_A_FAST_LIFT_SPEED;
-        int last3_diff = history_get(d, 2) - setup_raw;
+            float rise_from_valley = raw - d->a_valley_raw;
+            bool can_track_baseline =
+                (fabsf(signal) <= DETECTOR_A_BASELINE_TRACK_RANGE) &&
+                (fabsf((float)deriv) <= DETECTOR_A_BASELINE_QUIET_DERIV) &&
+                !d->a_fast_pending;
 
-        if (last3_diff > 2700)
-        {
-            deriv_down = -400;
-        }
-
-        if ((diff_deriv < deriv_down) ||
-            (diff_deriv_2 < deriv_down * 1.5f) ||
-            (diff_deriv_3 < deriv_down * 2))
-        {
-            if ((diff_deriv < -800) ||
-                (diff_deriv_2 < -1200) ||
-                (diff_deriv_3 < -1500))
+            if (can_track_baseline)
             {
-                if (diff < 1000)
+                float baseline_step = signal * DETECTOR_A_BASELINE_ALPHA;
+                float max_step = max_float(0.0f, DETECTOR_A_BASELINE_MAX_STEP);
+
+                if (baseline_step > max_step)
                 {
-                    on = false;
-                    d->diff_deriv_down_count = 3;
-                    if (diff > 500)
-                    {
-                        d->lock_releasing = true;
-                    }
+                    baseline_step = max_step;
                 }
+                else if (baseline_step < -max_step)
+                {
+                    baseline_step = -max_step;
+                }
+
+                d->a_baseline += baseline_step;
+                signal = raw - d->a_baseline;
             }
-            else if (diff < DETECTOR_A_QUICK_RELEASE_LINE)
+
+            if (d->a_after_release &&
+                (fabsf(signal) <= DETECTOR_A_BASELINE_TRACK_RANGE) &&
+                (fabsf((float)deriv) <= DETECTOR_A_BASELINE_QUIET_DERIV))
+            {
+                d->a_after_release = false;
+                d->a_valley_raw = raw;
+                d->a_valley_valid = true;
+                rise_from_valley = 0.0f;
+            }
+
+            bool fast_repress =
+                d->a_after_release &&
+                (signal >= DETECTOR_A_REPRESS_SIGNAL_MIN) &&
+                (rise_from_valley >= DETECTOR_A_REPRESS_RISE) &&
+                (deriv >= DETECTOR_A_REPRESS_DERIV);
+            bool slow_repress =
+                d->a_after_release &&
+                (signal >= DETECTOR_A_REPRESS_SIGNAL_MIN) &&
+                (rise_from_valley >= DETECTOR_A_REPRESS_SLOW_RISE) &&
+                (deriv >= DETECTOR_A_EDGE_MIN_DERIV);
+
+            if (fast_repress || slow_repress)
+            {
+                on = true;
+                a_accept_press(
+                    d,
+                    max_float(signal, (float)DETECTOR_A_REPRESS_SIGNAL_MIN));
+            }
+            else if (d->a_after_release)
             {
                 on = false;
-                d->diff_deriv_down_count = 3;
-                if (diff > 200)
+                a_clear_fast_pending(d);
+            }
+            else if (d->a_fast_pending)
+            {
+                if (signal > d->a_pending_peak)
                 {
-                    d->lock_releasing = true;
+                    d->a_pending_peak = signal;
+                }
+
+                if ((signal >= large_on) && (deriv >= 0))
+                {
+                    on = true;
+                    a_accept_press(d, max_float(signal, d->a_pending_peak));
+                }
+                else if ((deriv <= DETECTOR_A_PENDING_SETTLE_DERIV) &&
+                         (d->a_pending_peak >= DETECTOR_A_SHORT_TAP_PEAK))
+                {
+                    on = true;
+                    a_accept_press(d, max_float(signal, d->a_pending_peak));
+                }
+                else if ((signal < DETECTOR_A_FAST_PENDING_CANCEL) ||
+                         ((deriv < 0) &&
+                          (d->a_pending_peak < DETECTOR_A_SHORT_TAP_PEAK)))
+                {
+                    on = false;
+                    a_clear_fast_pending(d);
+                }
+                else
+                {
+                    on = false;
+                }
+            }
+            else
+            {
+                if ((signal >= large_on) && (deriv >= 0))
+                {
+                    on = true;
+                }
+                else if ((signal >= edge_on) &&
+                         (deriv >= DETECTOR_A_EDGE_MIN_DERIV))
+                {
+                    if (deriv >= DETECTOR_A_FAST_RISE_DERIV)
+                    {
+                        d->a_fast_pending = true;
+                        d->a_pending_peak = signal;
+                        on = false;
+                    }
+                    else
+                    {
+                        on = true;
+                    }
+                }
+                else
+                {
+                    on = false;
+                }
+
+                if (on)
+                {
+                    a_accept_press(d, max_float(signal, (float)edge_on));
                 }
             }
         }
@@ -236,8 +294,8 @@ bool detector_process_frame(ButtonDetector *d,
     }
     else
     {
-        int default_diff = 15;
-        int default_deriv_r = -16;
+        int default_diff = DETECTOR_E_DIFF_THRESHOLD;
+        int default_deriv_r = DETECTOR_E_DERIV_RELEASE;
 
         if (block == 'B')
         {
@@ -248,11 +306,6 @@ bool detector_process_frame(ButtonDetector *d,
         {
             default_diff = DETECTOR_D_DIFF_THRESHOLD;
             default_deriv_r = DETECTOR_D_DERIV_RELEASE;
-        }
-        else if (block == 'E')
-        {
-            default_diff = DETECTOR_E_DIFF_THRESHOLD;
-            default_deriv_r = DETECTOR_E_DERIV_RELEASE;
         }
 
         int last_diff = history_get(d, 0) - setup_raw;

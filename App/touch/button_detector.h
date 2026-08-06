@@ -7,17 +7,20 @@
 typedef struct {
     bool is_pressed;
 
-    /* AquaMai A-zone detector state. */
-    int diff_deriv_down_count;
-    int up;
-    bool lock_releasing;
-    bool edge_holding;
-    int active_edge_min_diff;
+    /* AquaMai A-zone dynamic-baseline state. */
+    float a_baseline;
+    bool a_baseline_initialized;
+    float a_peak;
+    bool a_after_release;
+    float a_valley_raw;
+    bool a_valley_valid;
+    bool a_fast_pending;
+    float a_pending_peak;
 
     /* Sixteen-frame raw-value history. */
     int history[16];
     int history_idx;
-    bool history_filled;
+    int history_count;
 } ButtonDetector;
 
 void detector_reset(ButtonDetector *d);
