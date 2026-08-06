@@ -259,27 +259,31 @@ void touch_pipeline_feed(int psoc_index, const uint8_t *raw_35)
 
     int base_ch = psoc_index * 17;
 
-    // ---- 阶段1: 字节级变化检测 (防重复数据污染) ----
-    if ((state == PIPELINE_STATE_READY) && block_cache_valid[psoc_index]) {
-        bool changed = false;
-        for (int i = 0; i < TENODATA_TOTAL_CHANNELS; i++) {
-            if (last_block[psoc_index][i] != raw_35[i + 1]) { // +1 跳过 status 字节
-                changed = true;
-                break;
-            }
+    // ---- 阶段1: 提取数值并记录每个通道是否变化 ----
+    uint16_t channel_vals[TENODATA_CHANNELS_PER_DEVICE];
+    bool channel_changed[TENODATA_CHANNELS_PER_DEVICE];
+    bool any_channel_changed = !block_cache_valid[psoc_index];
+
+    for (int i = 0; i < TENODATA_CHANNELS_PER_DEVICE; i++) {
+        int byte_offset = 1 + i * 2;
+        channel_vals[i] = raw_35[byte_offset] |
+            ((uint16_t)raw_35[byte_offset + 1] << 8);
+        channel_changed[i] =
+            !block_cache_valid[psoc_index] ||
+            (last_block[psoc_index][i * 2] != raw_35[byte_offset]) ||
+            (last_block[psoc_index][i * 2 + 1] != raw_35[byte_offset + 1]);
+
+        if (channel_changed[i]) {
+            any_channel_changed = true;
         }
-        if (!changed) return; // 无变化，跳过这片 PSoC
     }
 
-    // 更新缓存
-    memcpy(last_block[psoc_index], &raw_35[1], 34);
+    if ((state == PIPELINE_STATE_READY) && !any_channel_changed) {
+        return;
+    }
+
+    memcpy(last_block[psoc_index], &raw_35[1], sizeof(last_block[psoc_index]));
     block_cache_valid[psoc_index] = true;
-
-    // ---- 阶段2: 提取 17 通道 ushort 值 ----
-    uint16_t channel_vals[17];
-    for (int i = 0; i < 17; i++) {
-        channel_vals[i] = raw_35[1 + i * 2] | ((uint16_t)raw_35[2 + i * 2] << 8);
-    }
 
     // ---- 阶段3: 校准 或 判定 ----
     switch (state) {
@@ -313,9 +317,10 @@ void touch_pipeline_feed(int psoc_index, const uint8_t *raw_35)
             break;
 
         case PIPELINE_STATE_READY: {
-            for (int i = 0; i < 17; i++) {
+            for (int i = 0; i < TENODATA_CHANNELS_PER_DEVICE; i++) {
                 int phys_ch = base_ch + i;
                 if (!calib_ready[phys_ch]) continue; // 该通道尚未校准完毕
+                if (!channel_changed[i]) continue;   // 只更新实际变化的通道
 
                 (void)detector_process_frame(&detectors[phys_ch],
                                              (uint8_t)phys_ch,
