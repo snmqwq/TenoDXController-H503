@@ -1,0 +1,41 @@
+
+## A区 - 边缘触摸阈值
+#AEdgeOn = 320
+## A区 - 大面积触摸阈值
+#ALargeOn = 850
+## A区 - 快速上升导数
+AFastRiseDeriv = 50
+## A区 - 边缘最小上升导数
+AEdgeMinDeriv = 1
+## A区 - 快速短点击峰值
+AShortTapPeak = 350
+## A区 - 快速候选稳定导数
+#APendingSettleDeriv = 3
+## A区 - 快速候选取消阈值
+#AFastPendingCancel = 180
+## A区 - 彻底释放阈值
+#ACleanRelease = 105
+## A区 - 峰值释放比例
+AReleasePeakRatio = 0.45
+## A区 - 最小释放下降量
+#AReleaseMinDrop = 180
+## A区 - 最小释放下降比例
+#AReleaseDropRatio = 0.25
+## A区 - 释放导数
+AReleaseDeriv = -20
+## A区 - 快速重按上升量
+#ARepressRise = 120
+## A区 - 快速重按导数
+#ARepressDeriv = 20
+## A区 - 慢速重按上升量
+#ARepressSlowRise = 280
+## A区 - 重按最低信号
+#ARepressSignalMin = 250
+## A区 - 基线追踪范围
+#ABaselineTrackRange = 120
+## A区 - 基线静置导数
+ABaselineQuietDeriv = 5
+## A区 - 基线追踪系数
+#ABaselineAlpha = 0.02
+## A区 - 基线最大步长
+ABaselineMaxStep = 0.4

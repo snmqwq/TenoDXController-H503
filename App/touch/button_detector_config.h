@@ -9,18 +9,18 @@ char detector_get_block(uint8_t physical_channel);
 /* AquaMai A-zone dynamic-baseline defaults. */
 #define DETECTOR_A_EDGE_ON                 320
 #define DETECTOR_A_LARGE_ON                850
-#define DETECTOR_A_FAST_RISE_DERIV         90
-#define DETECTOR_A_EDGE_MIN_DERIV          2
+#define DETECTOR_A_FAST_RISE_DERIV         50
+#define DETECTOR_A_EDGE_MIN_DERIV          1
 
-#define DETECTOR_A_SHORT_TAP_PEAK          390
+#define DETECTOR_A_SHORT_TAP_PEAK          350
 #define DETECTOR_A_PENDING_SETTLE_DERIV    3
 #define DETECTOR_A_FAST_PENDING_CANCEL     180
 
 #define DETECTOR_A_CLEAN_RELEASE           105
-#define DETECTOR_A_RELEASE_PEAK_RATIO      0.52f
+#define DETECTOR_A_RELEASE_PEAK_RATIO      0.45f
 #define DETECTOR_A_RELEASE_MIN_DROP        180
 #define DETECTOR_A_RELEASE_DROP_RATIO      0.25f
-#define DETECTOR_A_RELEASE_DERIV           (-12)
+#define DETECTOR_A_RELEASE_DERIV           (-20)
 
 #define DETECTOR_A_REPRESS_RISE            120
 #define DETECTOR_A_REPRESS_DERIV           20
@@ -28,9 +28,9 @@ char detector_get_block(uint8_t physical_channel);
 #define DETECTOR_A_REPRESS_SIGNAL_MIN      250
 
 #define DETECTOR_A_BASELINE_TRACK_RANGE    120
-#define DETECTOR_A_BASELINE_QUIET_DERIV    6
+#define DETECTOR_A_BASELINE_QUIET_DERIV    5
 #define DETECTOR_A_BASELINE_ALPHA          0.02f
-#define DETECTOR_A_BASELINE_MAX_STEP       0.5f
+#define DETECTOR_A_BASELINE_MAX_STEP       0.4f
 
 /* AquaMai C-zone defaults. */
 #define DETECTOR_C_DIFF_THRESHOLD          25
