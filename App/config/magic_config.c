@@ -1,10 +1,15 @@
 #include "magic_config.h"
 
+#include "flash_config.h"
 #include "main.h"
 #include "status/status_led_app.h"
 #include "usb.h"
 #include <stddef.h>
 #include <string.h>
+
+#if defined(__GNUC__)
+#pragma GCC optimize ("Os")
+#endif
 
 #define MAGIC_CONFIG_MODULE_MAX         3U
 #define MAGIC_CONFIG_DFU_DELAY_MS       100U
@@ -190,14 +195,25 @@ static uint8_t handle_global_write_all(uint8_t const *payload, uint8_t payload_l
 
 static uint8_t handle_global_save_all(void)
 {
+    if (!flash_config_transaction_begin())
+    {
+        return MAGIC_CONFIG_STATUS_IO_ERROR;
+    }
+
     for (uint8_t i = 0; i < MAGIC_CONFIG_MODULE_MAX; i++)
     {
         if ((modules[i].module != 0U) &&
             (modules[i].save != NULL) &&
             !modules[i].save(MAGIC_CONFIG_PARAM_ALL))
         {
+            flash_config_transaction_abort();
             return MAGIC_CONFIG_STATUS_IO_ERROR;
         }
+    }
+
+    if (!flash_config_transaction_commit())
+    {
+        return MAGIC_CONFIG_STATUS_IO_ERROR;
     }
 
     return MAGIC_CONFIG_STATUS_OK;

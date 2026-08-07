@@ -9,8 +9,6 @@ extern "C" {
 #include <stdint.h>
 
 #define FLASH_CONFIG_AREA_SIZE       0x2000U
-#define FLASH_CONFIG_SLOT_SIZE       0x0800U
-#define FLASH_CONFIG_SLOT_PAYLOAD    (FLASH_CONFIG_SLOT_SIZE - 16U)
 
 typedef enum
 {
@@ -29,7 +27,11 @@ bool flash_config_write(flash_config_slot_t slot,
                         void const *data,
                         uint16_t data_length);
 bool flash_config_clear(flash_config_slot_t slot);
-uint32_t flash_config_slot_address(flash_config_slot_t slot);
+
+/* Group several slot updates into one atomic rolling record. */
+bool flash_config_transaction_begin(void);
+bool flash_config_transaction_commit(void);
+void flash_config_transaction_abort(void);
 
 #ifdef __cplusplus
 }
