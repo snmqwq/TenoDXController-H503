@@ -8,6 +8,7 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "tenodata.h"
 #include "tenodata_config.h"
 
 void touch_app_init(void);
@@ -20,6 +21,7 @@ bool touch_app_get_default_mapping(TenodataChannelMapping *mapping,
 bool touch_app_apply_config(TenodataChannelMapping const *mapping,
                             uint8_t count,
                             bool mai2touch_active);
+bool touch_app_get_psoc_status(TenodataStatusSnapshot *snapshot);
 
 #ifdef __cplusplus
 }

@@ -84,3 +84,8 @@ bool touch_app_apply_config(TenodataChannelMapping const *mapping,
 
     return true;
 }
+
+bool touch_app_get_psoc_status(TenodataStatusSnapshot *snapshot)
+{
+    return tenodata_get_status(snapshot);
+}

@@ -1,5 +1,9 @@
 #include "touch_config.h"
 
+#if defined(__GNUC__)
+#pragma GCC optimize ("Os")
+#endif
+
 #include <stdint.h>
 #include <string.h>
 
@@ -10,10 +14,17 @@
 #define TOUCH_PARAM_CHANNEL_MAPPING       0x01U
 #define TOUCH_PARAM_CDC_MODE              0x02U
 #define TOUCH_PARAM_CHANNEL_BATCH         0x03U
+#define TOUCH_PARAM_PSOC_STATUS           0x04U
 
 #define TOUCH_CDC_MODE_RAW                0U
 #define TOUCH_CDC_MODE_MAI2TOUCH          1U
 #define TOUCH_PAYLOAD_VERSION             2U
+#define TOUCH_STATUS_PAYLOAD_VERSION      1U
+#define TOUCH_STATUS_HEADER_LENGTH        4U
+#define TOUCH_STATUS_DEVICE_LENGTH        6U
+#define TOUCH_STATUS_PAYLOAD_LENGTH \
+    (TOUCH_STATUS_HEADER_LENGTH + \
+     TENODATA_STATUS_DEVICE_COUNT * TOUCH_STATUS_DEVICE_LENGTH)
 
 #define TOUCH_MAPPING_PAYLOAD_LENGTH \
     (TENODATA_TOTAL_CHANNELS * sizeof(TenodataChannelMapping))
@@ -35,6 +46,8 @@ _Static_assert(TOUCH_BATCH_RECORD_LENGTH == 3U,
                "Touch batch record must be three bytes");
 _Static_assert(sizeof(touch_config_payload_t) == 70U,
                "Touch all/Flash payload must be 70 bytes");
+_Static_assert(TOUCH_STATUS_PAYLOAD_LENGTH == 16U,
+               "Touch status payload must be 16 bytes");
 
 /* Magic callbacks run synchronously from the main loop, so shared work
  * buffers avoid placing several mapping objects on the MCU stack.
@@ -178,6 +191,45 @@ static bool touch_magic_read(uint8_t param,
             *out_length = 1U;
             return true;
 
+        case TOUCH_PARAM_PSOC_STATUS:
+        {
+            TenodataStatusSnapshot snapshot;
+
+            if ((max_length < TOUCH_STATUS_PAYLOAD_LENGTH) ||
+                !touch_app_get_psoc_status(&snapshot))
+            {
+                return false;
+            }
+
+            data[0] = TOUCH_STATUS_PAYLOAD_VERSION;
+            data[1] = snapshot.state;
+            data[2] = snapshot.flags;
+            data[3] = snapshot.device_count;
+
+            for (uint8_t index = 0U;
+                 index < TENODATA_STATUS_DEVICE_COUNT;
+                 index++)
+            {
+                uint8_t offset = (uint8_t)(
+                    TOUCH_STATUS_HEADER_LENGTH +
+                    index * TOUCH_STATUS_DEVICE_LENGTH);
+                TenodataPsocStatus const *device =
+                    &snapshot.devices[index];
+
+                data[offset] = device->address;
+                data[offset + 1U] = device->status;
+                data[offset + 2U] = device->flags;
+                data[offset + 3U] = device->consecutive_failures;
+                data[offset + 4U] =
+                    (uint8_t)(device->status_age_ms & 0xffU);
+                data[offset + 5U] =
+                    (uint8_t)(device->status_age_ms >> 8U);
+            }
+
+            *out_length = TOUCH_STATUS_PAYLOAD_LENGTH;
+            return true;
+        }
+
         default:
             return false;
     }
@@ -300,9 +352,25 @@ static bool touch_magic_info(uint8_t param,
                              uint8_t max_length,
                              uint8_t *out_length)
 {
-    (void)param;
+    if ((data == NULL) || (out_length == NULL))
+    {
+        return false;
+    }
 
-    if ((data == NULL) || (out_length == NULL) || (max_length < 7U))
+    if (param == TOUCH_PARAM_PSOC_STATUS)
+    {
+        if (max_length < 2U)
+        {
+            return false;
+        }
+
+        data[0] = TOUCH_STATUS_PAYLOAD_VERSION;
+        data[1] = TOUCH_STATUS_PAYLOAD_LENGTH;
+        *out_length = 2U;
+        return true;
+    }
+
+    if ((param != 0U) || (max_length < 7U))
     {
         return false;
     }

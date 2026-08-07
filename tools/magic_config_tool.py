@@ -61,6 +61,11 @@ TOUCH_MODULE = 0x10
 TOUCH_PARAM_FULL_MAP = 0x01
 TOUCH_PARAM_MODE = 0x02
 TOUCH_PARAM_BATCH_MAP = 0x03
+TOUCH_PARAM_PSOC_STATUS = 0x04
+TOUCH_STATUS_VERSION = 1
+TOUCH_STATUS_LENGTH = 16
+TOUCH_STATUS_DEVICE_LENGTH = 6
+TOUCH_STATUS_POLL_SECONDS = 0.5
 TOUCH_CHANNEL_COUNT = 34
 TOUCH_ZONE_COUNT = 34
 TOUCH_MAP_ENTRY_SIZE = 2
@@ -72,6 +77,38 @@ TOUCH_MODE_VALUES = {
     "mai2touch": TOUCH_MODE_MAI2TOUCH,
 }
 TOUCH_MODE_NAMES = {value: name for name, value in TOUCH_MODE_VALUES.items()}
+TOUCH_STATE_NAMES = {
+    0: "等待发现 PSoC",
+    1: "准备 PSoC",
+    2: "等待 PSoC 重启",
+    3: "验证 PSoC 重启",
+    4: "写入 PSoC 配置",
+    5: "等待校准",
+    6: "运行中",
+    7: "排空 I2C 后重初始化",
+}
+PSOC_STATUS_NAMES = {
+    0x00: "等待配置",
+    0x01: "开始初始化",
+    0x02: "运行中",
+    0x11: "启动 CapSense",
+    0x12: "应用参数",
+    0x13: "读取 Cp",
+    0x14: "SAR 校准",
+    0x15: "初始化基线",
+    0xAD: "收到软复位命令",
+    0xFF: "未知",
+}
+
+TOUCH_GLOBAL_FLAG_REINIT_REQUESTED = 0x01
+TOUCH_GLOBAL_FLAG_READ_INFLIGHT = 0x02
+PSOC_FLAG_CONNECTED = 0x01
+PSOC_FLAG_OPERATIONAL = 0x02
+PSOC_FLAG_UNAVAILABLE = 0x04
+PSOC_FLAG_STATUS_VALID = 0x08
+PSOC_FLAG_SOFT_RESET_SUPPORTED = 0x10
+PSOC_FLAG_LEGACY_FIRMWARE = 0x20
+PSOC_FLAG_POWER_CYCLE_REQUIRED = 0x40
 TOUCH_ZONE_NAMES = tuple(
     [f"A{number}" for number in range(1, 9)]
     + [f"B{number}" for number in range(1, 9)]
@@ -210,6 +247,22 @@ class TouchMapEntry:
         return self.zone[0]
 
 
+@dataclasses.dataclass(frozen=True)
+class PsocRuntimeStatus:
+    address: int
+    raw_status: int
+    flags: int
+    consecutive_failures: int
+    status_age_ms: int
+
+
+@dataclasses.dataclass(frozen=True)
+class TouchRuntimeStatus:
+    state: int
+    flags: int
+    devices: tuple[PsocRuntimeStatus, PsocRuntimeStatus]
+
+
 def parse_touch_channel(text: str) -> int:
     try:
         channel = int(text, 0)
@@ -343,6 +396,35 @@ def decode_touch_mode(payload: bytes) -> int:
     if len(payload) != 1 or payload[0] not in TOUCH_MODE_NAMES:
         raise ValueError("touch mode response must be one byte: 0=raw or 1=mai2touch")
     return payload[0]
+
+
+def decode_touch_status(payload: bytes) -> TouchRuntimeStatus:
+    if len(payload) != TOUCH_STATUS_LENGTH:
+        raise ValueError(
+            f"touch status must be {TOUCH_STATUS_LENGTH} bytes, got {len(payload)}"
+        )
+    if payload[0] != TOUCH_STATUS_VERSION:
+        raise ValueError(f"unsupported touch status version {payload[0]}")
+    if payload[3] != 2:
+        raise ValueError(f"touch status device count must be 2, got {payload[3]}")
+
+    devices = []
+    for index in range(2):
+        offset = 4 + index * TOUCH_STATUS_DEVICE_LENGTH
+        devices.append(
+            PsocRuntimeStatus(
+                address=payload[offset],
+                raw_status=payload[offset + 1],
+                flags=payload[offset + 2],
+                consecutive_failures=payload[offset + 3],
+                status_age_ms=payload[offset + 4] | (payload[offset + 5] << 8),
+            )
+        )
+    return TouchRuntimeStatus(
+        state=payload[1],
+        flags=payload[2],
+        devices=(devices[0], devices[1]),
+    )
 
 
 class MagicConfigClient:
@@ -706,6 +788,58 @@ def read_touch_mode(client: MagicConfigClient) -> int | None:
         return None
 
 
+def read_touch_status(client: MagicConfigClient) -> TouchRuntimeStatus:
+    response = client.request(
+        TOUCH_MODULE,
+        COMMANDS["read"],
+        TOUCH_PARAM_PSOC_STATUS,
+    )
+    require_ok(response)
+    return decode_touch_status(response.payload)
+
+
+def show_touch_status(status: TouchRuntimeStatus) -> None:
+    state_name = TOUCH_STATE_NAMES.get(status.state, "未知状态")
+    reinit = "是" if status.flags & TOUCH_GLOBAL_FLAG_REINIT_REQUESTED else "否"
+    reading = "是" if status.flags & TOUCH_GLOBAL_FLAG_READ_INFLIGHT else "否"
+    print(
+        f"STM32 Touch 状态机: {status.state} ({state_name})  "
+        f"重初始化={reinit}  I2C读取中={reading}"
+    )
+
+    for index, device in enumerate(status.devices):
+        connected = "已连接" if device.flags & PSOC_FLAG_CONNECTED else "未连接"
+        operational = "运行" if device.flags & PSOC_FLAG_OPERATIONAL else "未运行"
+        unavailable = "，恢复中" if device.flags & PSOC_FLAG_UNAVAILABLE else ""
+        if device.flags & PSOC_FLAG_SOFT_RESET_SUPPORTED:
+            generation = "新版（支持软复位）"
+        elif device.flags & PSOC_FLAG_LEGACY_FIRMWARE:
+            generation = "旧版（不支持软复位）"
+        else:
+            generation = "未知"
+
+        if device.flags & PSOC_FLAG_STATUS_VALID:
+            status_text = PSOC_STATUS_NAMES.get(device.raw_status, "未知值")
+            raw_status = f"0x{device.raw_status:02X} ({status_text})"
+            age = f"{device.status_age_ms} ms"
+        else:
+            raw_status = "无有效数据"
+            age = "未知"
+
+        config_state = (
+            "需要断电重连后应用"
+            if device.flags & PSOC_FLAG_POWER_CYCLE_REQUIRED
+            else "当前无需断电"
+        )
+        print(
+            f"PSoC{index}  地址=0x{device.address:02X}  "
+            f"{connected}/{operational}{unavailable}\n"
+            f"  状态={raw_status}  固件={generation}\n"
+            f"  连续I2C失败={device.consecutive_failures}  "
+            f"状态年龄={age}  配置={config_state}"
+        )
+
+
 def show_touch_map(client: MagicConfigClient) -> None:
     entries = read_touch_map(client)
     if entries is None:
@@ -722,11 +856,10 @@ def print_general_help() -> None:
     print(
         """
 可用命令:
-  help [type]                 显示帮助；type 可为 led/touch/aime/keyboard/dfu/raw
+  help [type]                 显示帮助；type 可为 led/touch/keyboard/dfu/raw
   led <command> [args]        灯光配置
   keyboard <command> [args]   键盘配置
   touch <command> [args]      触摸通道映射和协议输出模式配置
-  aime help                   说明 Aime 不提供配置接口
   dfu enter                   进入 DFU
   raw <module> <cmd> <param> [payload bytes...]
   exit                        断开当前串口并返回串口连接层
@@ -811,6 +944,8 @@ touch 命令:
   touch save                  保存当前 Touch 配置到 Flash
   touch defaults              恢复 Touch 默认配置到 RAM
   touch info                  读取固件暴露的 Touch 参数列表
+  touch status                显示 STM32 与两个 PSoC 的当前状态
+  touch watch                 每 500 ms 刷新一次状态，按 Ctrl+C 停止
 
 区域:
   A1..A8、B1..B8、C1..C2、D1..D8、E1..E8。
@@ -822,19 +957,6 @@ touch 命令:
   touch set 1 D4
   touch set-many 0 A1 1 A1 12 B4
   touch mode mai2touch
-""".strip()
-    )
-
-
-def print_aime_help() -> None:
-    print(
-        """
-aime 命令:
-  aime help                   显示本说明
-
-说明:
-  Aime/PN532 功能不提供 Magic 配置接口。
-  本命令只显示说明，不会向设备发送 aime/reader 配置请求。
 """.strip()
     )
 
@@ -885,8 +1007,6 @@ def print_help(topic: str | None = None) -> None:
         print_keyboard_help()
     elif lowered == "touch":
         print_touch_help()
-    elif lowered in ("aime", "reader"):
-        print_aime_help()
     elif lowered == "dfu":
         print_dfu_help()
     elif lowered == "raw":
@@ -1143,6 +1263,27 @@ def cmd_touch(client: MagicConfigClient, argv: list[str]) -> None:
             print(f"Touch mode = {TOUCH_MODE_NAMES[mode]}")
         return
 
+    if command in ("status", "watch"):
+        if len(argv) != 1:
+            command_error(f"touch {command} 不接受参数。", "touch")
+            return
+
+        try:
+            if command == "status":
+                show_touch_status(read_touch_status(client))
+                return
+
+            while True:
+                print("\033[2J\033[H", end="")
+                show_touch_status(read_touch_status(client))
+                print("\n每 500 ms 刷新；按 Ctrl+C 停止。")
+                time.sleep(TOUCH_STATUS_POLL_SECONDS)
+        except KeyboardInterrupt:
+            print("\n已停止 PSoC 状态监控。")
+        except Exception as exc:
+            print(f"Error: {exc}")
+        return
+
     if command == "save":
         if len(argv) != 1:
             command_error("touch save 不接受参数。", "touch")
@@ -1165,14 +1306,6 @@ def cmd_touch(client: MagicConfigClient, argv: list[str]) -> None:
         return
 
     command_error(f"未知 touch 命令: {argv[0]}", "touch")
-
-
-def cmd_aime(argv: list[str]) -> None:
-    if not argv or argv[0].lower() in ("help", "-h", "--help"):
-        print_aime_help()
-        return
-    print_aime_help()
-    print(f"\n未执行: aime {argv[0]} 当前未实现。")
 
 
 def cmd_dfu(client: MagicConfigClient, argv: list[str]) -> None:
@@ -1349,8 +1482,6 @@ def command_loop(client: MagicConfigClient, args: argparse.Namespace) -> None:
             cmd_keyboard(client, argv)
         elif root == "touch":
             cmd_touch(client, argv)
-        elif root in ("aime", "reader"):
-            cmd_aime(argv)
         elif root == "dfu":
             cmd_dfu(client, argv)
         elif root == "raw":

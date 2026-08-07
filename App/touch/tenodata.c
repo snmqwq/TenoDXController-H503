@@ -52,6 +52,7 @@ static uint8_t unavailable_device_mask;
 static uint8_t recovery_forced_mask;
 static uint8_t reset_expected_mask;
 static uint8_t reset_command_mask;
+static uint8_t reset_status2_seen_mask;
 static uint8_t reset_ready_mask;
 static uint8_t calibrated_device_mask;
 static uint8_t calibration_report_status;
@@ -59,6 +60,12 @@ static uint8_t discovery_candidate_mask;
 static uint8_t locked_discovery_mask;
 static uint8_t read_failure_count[PSOC_COMM_DEVICE_COUNT];
 static uint8_t recovery_failure_count[PSOC_COMM_DEVICE_COUNT];
+static uint8_t status_i2c_failure_count[PSOC_COMM_DEVICE_COUNT];
+static uint8_t last_psoc_status[PSOC_COMM_DEVICE_COUNT];
+static uint8_t status_valid_mask;
+static uint8_t soft_reset_supported_mask;
+static uint8_t legacy_firmware_mask;
+static uint8_t power_cycle_required_mask;
 static uint32_t next_cdc_tick;
 static uint32_t last_probe_tick;
 static uint32_t discovery_candidate_tick;
@@ -70,10 +77,14 @@ static uint32_t last_i2c_poll_tick;
 static uint32_t read_start_tick;
 static uint32_t last_reprobe_tick;
 static uint32_t recovery_retry_tick[PSOC_COMM_DEVICE_COUNT];
+static uint32_t last_psoc_status_tick[PSOC_COMM_DEVICE_COUNT];
 static uint32_t reinit_start_tick;
 static bool read_inflight;
 static bool reinit_requested;
 static bool discovery_mask_locked;
+
+_Static_assert(PSOC_COMM_DEVICE_COUNT == TENODATA_STATUS_DEVICE_COUNT,
+               "PSoC status protocol requires exactly two devices");
 
 static uint8_t device_bit(uint8_t device_index)
 {
@@ -90,6 +101,27 @@ static bool elapsed_at_least(uint32_t now,
 static bool tick_due(uint32_t now, uint32_t due)
 {
     return (int32_t)(now - due) >= 0;
+}
+
+static bool psoc_status_is_initializing(uint8_t status)
+{
+    return (status == PSOC_STATUS_START_CALIBRATION) ||
+           ((status >= 0x11U) && (status <= 0x15U));
+}
+
+static void record_psoc_status(uint8_t device_index,
+                               uint8_t status,
+                               uint32_t now)
+{
+    if (device_index >= PSOC_COMM_DEVICE_COUNT)
+    {
+        return;
+    }
+
+    last_psoc_status[device_index] = status;
+    last_psoc_status_tick[device_index] = now;
+    status_i2c_failure_count[device_index] = 0U;
+    status_valid_mask |= device_bit(device_index);
 }
 
 static void apply_pipeline_device_masks(void)
@@ -219,6 +251,7 @@ static void start_initialization(uint32_t now)
     init_target_mask = 0U;
     reset_expected_mask = 0U;
     reset_command_mask = 0U;
+    reset_status2_seen_mask = 0U;
     reset_ready_mask = 0U;
     calibrated_device_mask = 0U;
     calibration_report_status = PSOC_STATUS_START_CALIBRATION;
@@ -401,6 +434,8 @@ static bool record_device_read_failure(uint8_t device_index, uint32_t now)
     {
         read_failure_count[device_index]++;
     }
+    status_i2c_failure_count[device_index] =
+        read_failure_count[device_index];
 
     if (read_failure_count[device_index] < TENODATA_I2C_FAILURE_LIMIT)
     {
@@ -437,6 +472,7 @@ static bool probe_for_reconnected_devices(uint32_t now)
     {
         uint8_t mask = device_bit(index);
         uint8_t psoc_status = 0xffU;
+        bool status_read;
 
         if (((missing_mask & mask) == 0U) ||
             !tick_due(now, recovery_retry_tick[index]))
@@ -444,8 +480,14 @@ static bool probe_for_reconnected_devices(uint32_t now)
             continue;
         }
 
-        if (psoc_comm_probe_device_quick(index) &&
-            psoc_comm_read_status(index, &psoc_status) &&
+        status_read = psoc_comm_probe_device_quick(index) &&
+                      psoc_comm_read_status(index, &psoc_status);
+        if (status_read)
+        {
+            record_psoc_status(index, psoc_status, now);
+        }
+
+        if (status_read &&
             ((psoc_status == PSOC_STATUS_CRASH) ||
              (psoc_status == PSOC_STATUS_CALIBRATION_DONE)))
         {
@@ -488,6 +530,15 @@ void tenodata_init(void)
     discovery_mask_locked = false;
     memset(recovery_failure_count, 0, sizeof(recovery_failure_count));
     memset(recovery_retry_tick, 0, sizeof(recovery_retry_tick));
+    memset(status_i2c_failure_count,
+           0,
+           sizeof(status_i2c_failure_count));
+    memset(last_psoc_status, 0xff, sizeof(last_psoc_status));
+    memset(last_psoc_status_tick, 0, sizeof(last_psoc_status_tick));
+    status_valid_mask = 0U;
+    soft_reset_supported_mask = 0U;
+    legacy_firmware_mask = 0U;
+    power_cycle_required_mask = 0U;
     reinit_requested = false;
     touch_pipeline_set_device_masks(pipeline_device_mask, 0U);
     start_initialization(now);
@@ -583,17 +634,68 @@ void tenodata_task(void)
 
         case STATE_PREPARE_PSOC:
         {
-            /* Every selected device must accept 0xAD and subsequently report
-             * status 0 before it is allowed into the configuration phase.
+            /* Read status before sending 0xAD. Legacy firmware can ACK the
+             * command without implementing it, and writing 0xAD while it is
+             * waiting at status 0 can make it leave the startup wait path.
              */
             reset_expected_mask = init_target_mask;
-            reset_command_mask =
-                (uint8_t)(psoc_comm_soft_reset_all() &
-                          reset_expected_mask);
+            reset_command_mask = 0U;
+            reset_status2_seen_mask = 0U;
             reset_ready_mask = 0U;
             reset_cycle_tick = HAL_GetTick();
             reset_wait_tick = reset_cycle_tick;
-            state = STATE_WAIT_PSOC_REBOOT;
+
+            for (uint8_t index = 0U;
+                 index < PSOC_COMM_DEVICE_COUNT;
+                 index++)
+            {
+                uint8_t mask = device_bit(index);
+                uint8_t psoc_status = 0xffU;
+
+                if ((reset_expected_mask & mask) == 0U)
+                {
+                    continue;
+                }
+
+                if (!psoc_comm_probe_device(index) ||
+                    !psoc_comm_read_status(index, &psoc_status))
+                {
+                    continue;
+                }
+
+                record_psoc_status(index, psoc_status, reset_cycle_tick);
+
+                if (psoc_status == PSOC_STATUS_CRASH)
+                {
+                    /* Both firmware generations use status 0 while waiting
+                     * for their initial configuration. No reset is needed.
+                     */
+                    reset_ready_mask |= mask;
+                    power_cycle_required_mask &= (uint8_t)~mask;
+                }
+                else if ((psoc_status == PSOC_STATUS_CALIBRATION_DONE) &&
+                         psoc_comm_soft_reset(index))
+                {
+                    reset_command_mask |= mask;
+                }
+                else if (psoc_status_is_initializing(psoc_status))
+                {
+                    /* 0xAD is intentionally ignored by new firmware during
+                     * 0x01/0x11-0x15, so wait for a stable state first.
+                     */
+                }
+            }
+
+            if ((reset_ready_mask & reset_expected_mask) ==
+                reset_expected_mask)
+            {
+                finish_reboot_verification(reset_ready_mask,
+                                           reset_cycle_tick);
+            }
+            else
+            {
+                state = STATE_WAIT_PSOC_REBOOT;
+            }
             break;
         }
 
@@ -632,19 +734,73 @@ void tenodata_task(void)
                         continue;
                     }
 
-                    if (psoc_comm_probe_device(index) &&
-                        ((reset_command_mask & mask) != 0U) &&
-                        psoc_comm_read_status(index, &psoc_status) &&
-                        (psoc_status == PSOC_STATUS_CRASH))
+                    if (!psoc_comm_probe_device(index) ||
+                        !psoc_comm_read_status(index, &psoc_status))
+                    {
+                        continue;
+                    }
+
+                    record_psoc_status(index, psoc_status, now);
+
+                    if (psoc_status == PSOC_STATUS_CRASH)
                     {
                         reset_ready_mask |= mask;
-                    }
-                    else if (!reset_timed_out)
-                    {
-                        if (psoc_comm_soft_reset(index))
+                        power_cycle_required_mask &= (uint8_t)~mask;
+                        if ((reset_command_mask & mask) != 0U)
                         {
-                            reset_command_mask |= mask;
-                            reset_retried = true;
+                            soft_reset_supported_mask |= mask;
+                            legacy_firmware_mask &= (uint8_t)~mask;
+                        }
+                        continue;
+                    }
+
+                    if (psoc_status_is_initializing(psoc_status))
+                    {
+                        /* A reset attempt made before initialization started
+                         * is no longer evidence for legacy detection.
+                         */
+                        reset_command_mask &= (uint8_t)~mask;
+                        reset_status2_seen_mask &= (uint8_t)~mask;
+                        continue;
+                    }
+
+                    if (psoc_status == PSOC_STATUS_CALIBRATION_DONE)
+                    {
+                        if (((reset_command_mask & mask) != 0U) &&
+                            ((reset_status2_seen_mask & mask) != 0U))
+                        {
+                            /* Two completed reset writes both left status 2:
+                             * keep legacy firmware online. Its new settings
+                             * take effect after the next full power cycle.
+                             */
+                            reset_ready_mask |= mask;
+                            legacy_firmware_mask |= mask;
+                            soft_reset_supported_mask &= (uint8_t)~mask;
+                            power_cycle_required_mask |= mask;
+                        }
+                        else if (reset_timed_out)
+                        {
+                            continue;
+                        }
+                        else if ((reset_command_mask & mask) == 0U)
+                        {
+                            if (psoc_comm_soft_reset(index))
+                            {
+                                reset_command_mask |= mask;
+                                reset_retried = true;
+                            }
+                        }
+                        else if ((reset_status2_seen_mask & mask) == 0U)
+                        {
+                            /* The first command left the device at status 2.
+                             * Retry once to distinguish a delayed new-firmware
+                             * reset from legacy firmware that overwrites 0xAD.
+                             */
+                            if (psoc_comm_soft_reset(index))
+                            {
+                                reset_status2_seen_mask |= mask;
+                                reset_retried = true;
+                            }
                         }
                     }
                 }
@@ -735,6 +891,8 @@ void tenodata_task(void)
                         {
                             read_failure_count[index]++;
                         }
+                        status_i2c_failure_count[index] =
+                            read_failure_count[index];
                         if (read_failure_count[index] >=
                             TENODATA_I2C_FAILURE_LIMIT)
                         {
@@ -744,6 +902,7 @@ void tenodata_task(void)
                     }
 
                     read_failure_count[index] = 0U;
+                    record_psoc_status(index, psoc_status, now);
                     calibration_report_status = psoc_status;
 
                     if (psoc_status == PSOC_STATUS_CRASH)
@@ -825,6 +984,13 @@ void tenodata_task(void)
                     psoc_comm_commit_read(completed_device);
                     device = psoc_comm_get_device(completed_device);
                     read_failure_count[completed_device] = 0U;
+
+                    if (device != NULL)
+                    {
+                        record_psoc_status(completed_device,
+                                           device->raw[0],
+                                           now);
+                    }
 
                     psoc_comm_clear_read_flags();
                     read_inflight = false;
@@ -960,4 +1126,76 @@ void tenodata_task(void)
                 break;
         }
     }
+}
+
+bool tenodata_get_status(TenodataStatusSnapshot *snapshot)
+{
+    uint32_t now;
+    uint8_t connected_mask;
+
+    if (snapshot == NULL)
+    {
+        return false;
+    }
+
+    now = HAL_GetTick();
+    connected_mask = psoc_comm_get_connected_mask();
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->state = (uint8_t)state;
+    snapshot->device_count = PSOC_COMM_DEVICE_COUNT;
+    if (reinit_requested)
+    {
+        snapshot->flags |= TENODATA_STATUS_FLAG_REINIT_REQUESTED;
+    }
+    if (read_inflight)
+    {
+        snapshot->flags |= TENODATA_STATUS_FLAG_READ_INFLIGHT;
+    }
+
+    for (uint8_t index = 0U; index < PSOC_COMM_DEVICE_COUNT; index++)
+    {
+        uint8_t mask = device_bit(index);
+        TenodataPsocStatus *device = &snapshot->devices[index];
+
+        device->address = (uint8_t)(0x08U + index);
+        device->status = last_psoc_status[index];
+        device->consecutive_failures =
+            status_i2c_failure_count[index];
+        device->status_age_ms = UINT16_MAX;
+
+        if ((connected_mask & mask) != 0U)
+        {
+            device->flags |= TENODATA_DEVICE_FLAG_CONNECTED;
+        }
+        if ((operational_device_mask & mask) != 0U)
+        {
+            device->flags |= TENODATA_DEVICE_FLAG_OPERATIONAL;
+        }
+        if (((unavailable_device_mask | recovery_forced_mask) & mask) != 0U)
+        {
+            device->flags |= TENODATA_DEVICE_FLAG_UNAVAILABLE;
+        }
+        if ((status_valid_mask & mask) != 0U)
+        {
+            uint32_t age = now - last_psoc_status_tick[index];
+
+            device->flags |= TENODATA_DEVICE_FLAG_STATUS_VALID;
+            device->status_age_ms =
+                (age > UINT16_MAX) ? UINT16_MAX : (uint16_t)age;
+        }
+        if ((soft_reset_supported_mask & mask) != 0U)
+        {
+            device->flags |= TENODATA_DEVICE_FLAG_SOFT_RESET_SUPPORTED;
+        }
+        if ((legacy_firmware_mask & mask) != 0U)
+        {
+            device->flags |= TENODATA_DEVICE_FLAG_LEGACY_FIRMWARE;
+        }
+        if ((power_cycle_required_mask & mask) != 0U)
+        {
+            device->flags |= TENODATA_DEVICE_FLAG_POWER_CYCLE_REQUIRED;
+        }
+    }
+
+    return true;
 }
