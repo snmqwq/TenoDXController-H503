@@ -65,6 +65,7 @@ typedef enum
 typedef struct
 {
     bool present;
+    pn532_reader_card_info_t info;
     uint8_t block_data[PN532_READER_CARD_BLOCK_LENGTH];
     uint32_t last_read_tick;
 } aime_card_state_t;
@@ -81,6 +82,8 @@ typedef struct
 typedef struct
 {
     bool initialized;
+    bool polling_enabled;
+    bool discard_inflight;
     pn532_init_state_t init_state;
     uint8_t init_index;
     uint8_t init_attempts;
@@ -95,6 +98,8 @@ typedef struct
     uint32_t raw_debug_tick;
     bool link_connected;
     bool no_response_reported;
+    uint8_t pending_mifare_uid_length;
+    uint8_t pending_mifare_uid[PN532_READER_MIFARE_UID_MAX_LENGTH];
     uint8_t raw_debug_length;
     uint8_t raw_debug[PN532_RAW_DEBUG_LENGTH];
     pn532_rx_parser_t rx;
@@ -137,9 +142,19 @@ static void pn532_note_valid_rx(uint32_t now);
 static void pn532_link_task(uint32_t now);
 static void pn532_raw_debug_add(uint8_t data, uint32_t now);
 static void pn532_raw_debug_task(uint32_t now);
-static void card_update(
+static void card_clear(void);
+static void card_update_mifare(
+    const uint8_t *uid,
+    uint8_t uid_length,
     const uint8_t block_data[PN532_READER_CARD_BLOCK_LENGTH],
-    uint32_t now);
+    uint32_t now) __attribute__((optimize("Os")));
+static void card_update_felica(
+    const uint8_t idm[PN532_READER_FELICA_IDM_LENGTH],
+    const uint8_t pmm[PN532_READER_FELICA_PMM_LENGTH],
+    const uint8_t block_data[PN532_READER_CARD_BLOCK_LENGTH],
+    uint32_t now) __attribute__((optimize("Os")));
+static void pn532_clear_pending_mifare(void)
+    __attribute__((optimize("Os")));
 static void pn532_reset_rx_parser(void);
 static void pn532_flush_uart_rx(void);
 static bool pn532_start_uart_receive(void);
@@ -155,11 +170,22 @@ static void pn532_set_idle(uint32_t now);
 static void pn532_poll_task(void);
 static void pn532_handle_poll_response(const uint8_t *payload,
                                        uint8_t length,
-                                       uint32_t now);
+                                       uint32_t now)
+    __attribute__((optimize("Os")));
 static void pn532_handle_data_response(const uint8_t *payload,
                                        uint8_t length,
-                                       uint32_t now);
-static void pn532_store_felica_idm(const uint8_t idm[8], uint32_t now);
+                                       uint32_t now)
+    __attribute__((optimize("Os")));
+static void pn532_store_felica_card(
+    const uint8_t idm[PN532_READER_FELICA_IDM_LENGTH],
+    const uint8_t pmm[PN532_READER_FELICA_PMM_LENGTH],
+    uint32_t now) __attribute__((optimize("Os")));
+
+void pn532_reader_start_polling(void) __attribute__((optimize("Os")));
+void pn532_reader_stop_polling(void) __attribute__((optimize("Os")));
+bool pn532_reader_copy_card_info(uint32_t now,
+                                 pn532_reader_card_info_t *card_info)
+    __attribute__((optimize("Os")));
 
 void pn532_reader_init(void)
 {
@@ -205,17 +231,65 @@ void pn532_reader_task(void)
     pn532_poll_task();
 }
 
-bool pn532_reader_card_is_present(uint32_t now)
+void pn532_reader_start_polling(void)
 {
+    uint32_t now = HAL_GetTick();
+
+    if (pn532.polling_enabled)
+    {
+        return;
+    }
+
+    pn532.polling_enabled = true;
+    if (pn532.initialized &&
+        (pn532.read_state == PN532_READ_IDLE) &&
+        !pn532.discard_inflight)
+    {
+        pn532.next_action_tick = now;
+    }
+}
+
+void pn532_reader_stop_polling(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    pn532.polling_enabled = false;
+    pn532.discard_inflight = pn532.read_state != PN532_READ_IDLE;
+    pn532_clear_pending_mifare();
+    card_clear();
+
+    if (!pn532.discard_inflight)
+    {
+        pn532_set_read_state(PN532_READ_IDLE, now);
+    }
+
+    pn532.last_physical_card_tick = now - PN532_CARD_DEBOUNCE_MS;
+}
+
+bool pn532_reader_copy_card_info(uint32_t now,
+                                 pn532_reader_card_info_t *card_info)
+{
+    if (card_info == NULL)
+    {
+        return false;
+    }
+
     if (card_state.present &&
         elapsed_at_least(now,
                          card_state.last_read_tick,
                          AIME_CARD_PRESENCE_TIMEOUT_MS))
     {
-        card_state.present = false;
+        card_clear();
     }
 
-    return card_state.present;
+    memset(card_info, 0, sizeof(*card_info));
+    if (!card_state.present)
+    {
+        return false;
+    }
+
+    *card_info = card_state.info;
+    return true;
 }
 
 void pn532_reader_copy_last_block(
@@ -407,16 +481,70 @@ static void pn532_raw_debug_task(uint32_t now)
     }
 }
 
-static void card_update(
+static void card_clear(void)
+{
+    memset(&card_state, 0, sizeof(card_state));
+}
+
+static void card_update_mifare(
+    const uint8_t *uid,
+    uint8_t uid_length,
     const uint8_t block_data[PN532_READER_CARD_BLOCK_LENGTH],
     uint32_t now)
 {
+    if ((uid == NULL) ||
+        (uid_length == 0U) ||
+        (uid_length > PN532_READER_MIFARE_UID_MAX_LENGTH))
+    {
+        return;
+    }
+
+    card_clear();
+    card_state.info.type = PN532_READER_CARD_TYPE_MIFARE;
+    card_state.info.identifier_length = uid_length;
+    memcpy(card_state.info.identifier, uid, uid_length);
     memcpy(card_state.block_data, block_data, sizeof(card_state.block_data));
     card_state.present = true;
     card_state.last_read_tick = now;
     pn532_debug_hex("[PN532 CARD BLOCK] ",
                     block_data,
                     sizeof(card_state.block_data));
+}
+
+static void card_update_felica(
+    const uint8_t idm[PN532_READER_FELICA_IDM_LENGTH],
+    const uint8_t pmm[PN532_READER_FELICA_PMM_LENGTH],
+    const uint8_t block_data[PN532_READER_CARD_BLOCK_LENGTH],
+    uint32_t now)
+{
+    if ((idm == NULL) || (pmm == NULL))
+    {
+        return;
+    }
+
+    card_clear();
+    card_state.info.type = PN532_READER_CARD_TYPE_FELICA;
+    card_state.info.identifier_length = PN532_READER_CARD_ID_MAX_LENGTH;
+    memcpy(card_state.info.identifier,
+           idm,
+           PN532_READER_FELICA_IDM_LENGTH);
+    memcpy(&card_state.info.identifier[PN532_READER_FELICA_IDM_LENGTH],
+           pmm,
+           PN532_READER_FELICA_PMM_LENGTH);
+    memcpy(card_state.block_data, block_data, sizeof(card_state.block_data));
+    card_state.present = true;
+    card_state.last_read_tick = now;
+    pn532_debug_hex("[PN532 CARD BLOCK] ",
+                    block_data,
+                    sizeof(card_state.block_data));
+}
+
+static void pn532_clear_pending_mifare(void)
+{
+    pn532.pending_mifare_uid_length = 0U;
+    memset(pn532.pending_mifare_uid,
+           0,
+           sizeof(pn532.pending_mifare_uid));
 }
 
 static void pn532_reset_rx_parser(void)
@@ -490,10 +618,13 @@ static void pn532_restart_init(uint32_t now)
     pn532.init_expected_response = 0U;
     pn532.poll_counter = 0U;
     pn532.read_state = PN532_READ_IDLE;
+    pn532.discard_inflight = false;
     pn532.link_connected = false;
     pn532.no_response_reported = false;
     pn532.link_check_tick = now;
     pn532.next_action_tick = HAL_GetTick() + PN532_INIT_RESTART_DELAY_MS;
+    pn532_clear_pending_mifare();
+    card_clear();
 }
 
 static void pn532_uart_service_task(void)
@@ -922,8 +1053,15 @@ static void pn532_poll_task(void)
             {
                 pn532_debug_text("[PN532 TIMEOUT] READING\r\n");
             }
+            pn532.discard_inflight = false;
+            pn532_clear_pending_mifare();
             pn532_set_idle(now);
         }
+        return;
+    }
+
+    if (!pn532.polling_enabled)
+    {
         return;
     }
 
@@ -970,6 +1108,14 @@ static void pn532_handle_poll_response(const uint8_t *payload,
         return;
     }
 
+    if (pn532.discard_inflight || !pn532.polling_enabled)
+    {
+        pn532.discard_inflight = false;
+        pn532_clear_pending_mifare();
+        pn532_set_idle(now);
+        return;
+    }
+
     if ((length < 3U) || (payload[2] == 0U))
     {
         pn532_set_idle(now);
@@ -984,12 +1130,16 @@ static void pn532_handle_poll_response(const uint8_t *payload,
         return;
     }
 
-    if ((length >= 14U) && (payload[4] == 0x14U))
+    if ((length >= 22U) &&
+        (payload[4] >= 0x12U) &&
+        ((uint16_t)payload[4] + 4U <= length))
     {
         pn532_debug_text("[PN532 CARD] FELICA\r\n");
         pn532_debug_hex("[PN532 FELICA IDM] ", &payload[6], 8U);
+        pn532_debug_hex("[PN532 FELICA PMM] ", &payload[14], 8U);
         pn532.last_physical_card_tick = now;
-        pn532_store_felica_idm(&payload[6], now);
+        pn532_clear_pending_mifare();
+        pn532_store_felica_card(&payload[6], &payload[14], now);
         pn532_set_idle(now);
         return;
     }
@@ -1016,6 +1166,9 @@ static void pn532_handle_poll_response(const uint8_t *payload,
     auth_command[4] = 0x02U;
     memcpy(&auth_command[5], mifare_key, sizeof(mifare_key));
     memcpy(&auth_command[11], &payload[8], uid_length);
+    pn532_clear_pending_mifare();
+    pn532.pending_mifare_uid_length = uid_length;
+    memcpy(pn532.pending_mifare_uid, &payload[8], uid_length);
 
     pn532_debug_text("[PN532 CARD] MIFARE\r\n");
     pn532_debug_hex("[PN532 MIFARE UID] ", &payload[8], uid_length);
@@ -1026,6 +1179,7 @@ static void pn532_handle_poll_response(const uint8_t *payload,
     }
     else
     {
+        pn532_clear_pending_mifare();
         pn532_set_idle(now);
     }
 }
@@ -1039,6 +1193,14 @@ static void pn532_handle_data_response(const uint8_t *payload,
         PN532_TFI, PN532_IN_DATA_EXCHANGE, 0x01U, 0x30U, 0x02U
     };
     uint8_t status = (length >= 3U) ? payload[2] : 0xFFU;
+
+    if (pn532.discard_inflight || !pn532.polling_enabled)
+    {
+        pn532.discard_inflight = false;
+        pn532_clear_pending_mifare();
+        pn532_set_idle(now);
+        return;
+    }
 
     if (pn532.read_state == PN532_READ_AUTHING)
     {
@@ -1058,6 +1220,7 @@ static void pn532_handle_data_response(const uint8_t *payload,
         }
 
         pn532.last_physical_card_tick = now;
+        pn532_clear_pending_mifare();
         pn532_set_idle(now);
     }
     else if (pn532.read_state == PN532_READ_READING)
@@ -1066,7 +1229,10 @@ static void pn532_handle_data_response(const uint8_t *payload,
         {
             pn532_debug_text("[PN532] READ BLOCK 2 OK\r\n");
             pn532.last_physical_card_tick = now;
-            card_update(&payload[3], now);
+            card_update_mifare(pn532.pending_mifare_uid,
+                               pn532.pending_mifare_uid_length,
+                               &payload[3],
+                               now);
         }
         else if (status != 0U)
         {
@@ -1076,11 +1242,15 @@ static void pn532_handle_data_response(const uint8_t *payload,
         {
             pn532_debug_text("[PN532] READ RESPONSE TOO SHORT\r\n");
         }
+        pn532_clear_pending_mifare();
         pn532_set_idle(now);
     }
 }
 
-static void pn532_store_felica_idm(const uint8_t idm[8], uint32_t now)
+static void pn532_store_felica_card(
+    const uint8_t idm[PN532_READER_FELICA_IDM_LENGTH],
+    const uint8_t pmm[PN532_READER_FELICA_PMM_LENGTH],
+    uint32_t now)
 {
     uint64_t value = 0U;
     uint8_t decimal_digits[20];
@@ -1105,5 +1275,5 @@ static void pn532_store_felica_idm(const uint8_t idm[8], uint32_t now)
                       decimal_digits[index * 2U + 1U]);
     }
 
-    card_update(block_data, now);
+    card_update_felica(idm, pmm, block_data, now);
 }

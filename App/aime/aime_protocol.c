@@ -36,14 +36,17 @@ static bool elapsed_at_least(uint32_t now, uint32_t start, uint32_t period)
     return (uint32_t)(now - start) >= period;
 }
 
-static void aime_handle_request(const uint8_t *packet, uint8_t length);
+static void aime_handle_request(const uint8_t *packet, uint8_t length)
+    __attribute__((optimize("Os")));
 static void aime_queue_response(uint8_t address,
                                 uint8_t sequence,
                                 uint8_t command,
                                 uint8_t status,
                                 const uint8_t *payload,
-                                uint8_t payload_length);
-static bool aime_encode_byte(uint8_t data, uint8_t *output, uint8_t *length);
+                                uint8_t payload_length)
+    __attribute__((optimize("Os")));
+static bool aime_encode_byte(uint8_t data, uint8_t *output, uint8_t *length)
+    __attribute__((optimize("Os")));
 
 void aime_protocol_init(aime_host_tx_sink_t const *tx_sink)
 {
@@ -165,12 +168,10 @@ static void aime_handle_request(const uint8_t *packet, uint8_t length)
         '0', '0', '0', '-', '0', '0', '0', '0', '0',
         0xFFU, 0x11U, 0x40U
     };
-    static const uint8_t card_present_response[] =
-    {
-        0x01U, 0x10U, 0x04U, 0x01U, 0x02U, 0x03U, 0x04U
-    };
     static const uint8_t card_absent_response[] = { 0x00U };
     static const uint8_t empty_block[PN532_READER_CARD_BLOCK_LENGTH] = { 0U };
+    pn532_reader_card_info_t card_info;
+    uint8_t card_present_response[3U + PN532_READER_CARD_ID_MAX_LENGTH];
     uint8_t last_block[PN532_READER_CARD_BLOCK_LENGTH];
     uint8_t frame_length;
     uint8_t address;
@@ -220,11 +221,38 @@ static void aime_handle_request(const uint8_t *packet, uint8_t length)
             response_length = sizeof(extension_info);
             break;
 
+        case 0x40U:
+            pn532_reader_start_polling();
+            break;
+
+        case 0x41U:
+            pn532_reader_stop_polling();
+            break;
+
         case 0x42U:
-            if (pn532_reader_card_is_present(now))
+            if (pn532_reader_copy_card_info(now, &card_info))
             {
-                response_payload = card_present_response;
-                response_length = sizeof(card_present_response);
+                card_present_response[0] = 0x01U;
+                if (((card_info.type == PN532_READER_CARD_TYPE_MIFARE) ||
+                     (card_info.type == PN532_READER_CARD_TYPE_FELICA)) &&
+                    (card_info.identifier_length != 0U) &&
+                    (card_info.identifier_length <=
+                     PN532_READER_CARD_ID_MAX_LENGTH))
+                {
+                    card_present_response[1] = card_info.type;
+                    card_present_response[2] = card_info.identifier_length;
+                    memcpy(&card_present_response[3],
+                           card_info.identifier,
+                           card_info.identifier_length);
+                    response_payload = card_present_response;
+                    response_length =
+                        (uint8_t)(3U + card_info.identifier_length);
+                }
+                else
+                {
+                    response_payload = card_absent_response;
+                    response_length = sizeof(card_absent_response);
+                }
             }
             else
             {
