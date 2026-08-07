@@ -27,6 +27,9 @@ tools/.venv/
 tools/test_tools/build/
 tools/test_tools/dist/
 
+# Independent configuration-tool repository nested in this workspace
+TenoDXConfigurationTool/
+
 # OS and editor noise
 .DS_Store
 Thumbs.db
