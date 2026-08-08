@@ -1,6 +1,7 @@
 # STM32CubeIDE build output
 Debug/
 Release/
+build/
 
 # Eclipse workspace-local data
 .metadata/

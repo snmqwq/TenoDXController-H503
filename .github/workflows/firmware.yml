@@ -1,0 +1,80 @@
+name: Build firmware
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ARM_TOOLCHAIN_URL: https://developer.arm.com/-/media/Files/downloads/gnu/13.3.rel1/binrel/arm-gnu-toolchain-13.3.rel1-x86_64-arm-none-eabi.tar.xz
+
+jobs:
+  build:
+    name: Release firmware
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install Arm GNU Toolchain 13.3.Rel1
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 "$ARM_TOOLCHAIN_URL" \
+            --output "$RUNNER_TEMP/arm-toolchain.tar.xz"
+          mkdir -p "$RUNNER_TEMP/arm-toolchain"
+          tar -xf "$RUNNER_TEMP/arm-toolchain.tar.xz" \
+            -C "$RUNNER_TEMP/arm-toolchain"
+          toolchain_dir="$(find "$RUNNER_TEMP/arm-toolchain" \
+            -mindepth 1 -maxdepth 1 -type d \
+            -name 'arm-gnu-toolchain-*' -print -quit)"
+          test -n "$toolchain_dir"
+          echo "$toolchain_dir/bin" >> "$GITHUB_PATH"
+
+      - name: Verify compiler
+        run: arm-none-eabi-gcc --version
+
+      - name: Configure Release build
+        run: >-
+          cmake -S . -B build/firmware
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake
+
+      - name: Build firmware
+        run: cmake --build build/firmware --parallel
+
+      - name: Prepare firmware artifact
+        id: artifact
+        shell: bash
+        run: |
+          stamp="$(date -u +%Y%m%d_%H%M%S)"
+          mkdir -p action-artifacts
+          cp build/firmware/maimai_controller_H503.bin \
+            "action-artifacts/maimai_controller_H503_${stamp}.bin"
+          cp build/firmware/maimai_controller_H503.hex \
+            "action-artifacts/maimai_controller_H503_${stamp}.hex"
+          cp build/firmware/maimai_controller_H503.elf action-artifacts/
+          cp build/firmware/maimai_controller_H503.map action-artifacts/
+          arm-none-eabi-size build/firmware/maimai_controller_H503.elf \
+            | tee action-artifacts/firmware-size.txt
+          git rev-parse HEAD > action-artifacts/firmware-source-sha.txt
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Release firmware
+        uses: actions/upload-artifact@v7
+        with:
+          name: firmware-release-${{ steps.artifact.outputs.stamp }}
+          path: action-artifacts/
+          if-no-files-found: error
+          retention-days: 30

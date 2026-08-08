@@ -220,6 +220,21 @@ maimai_controller_H503_YYYYMMDD_HHMMSS.hex
 
 外设和引脚配置以 `maimai_controller_H503.ioc` 为准。
 
+仓库还提供独立于 CubeIDE 的 CMake 构建入口。默认使用与 CubeIDE `Release`
+一致的 `-Os/-g0` 参数，也可以通过 `CMAKE_BUILD_TYPE=Debug` 构建调试版本：
+
+```powershell
+cmake -S . -B build/firmware `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake
+cmake --build build/firmware --parallel
+```
+
+推送到 `main`、创建面向 `main` 的 Pull Request 或手动运行 **Build firmware**
+工作流时，GitHub Actions 会使用 Arm GNU Toolchain 13.3.Rel1 构建 Release 固件。
+运行结果中的 Artifact 包含带 UTC 时间戳的 BIN/HEX、ELF、MAP、空间占用报告和
+对应源码提交号；Artifact 保留 30 天。
+
 ## 工程结构
 
 | 路径 | 内容 |
