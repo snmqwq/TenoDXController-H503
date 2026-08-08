@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-#include "stm32H5xx_hal.h"
+#include "stm32h5xx_hal.h"
 
 //--------------------------------------------------------------------
 // COMMON CONFIGURATION
