@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.24)
 
 project(maimai_controller_H503 LANGUAGES C ASM)
 
+include(CheckCCompilerFlag)
+
 set(FIRMWARE_NAME maimai_controller_H503)
 set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/STM32H503CBTX_FLASH.ld")
 
@@ -17,6 +19,11 @@ foreach(LANGUAGE C ASM)
     set(CMAKE_${LANGUAGE}_FLAGS_DEBUG "" CACHE STRING "" FORCE)
     set(CMAKE_${LANGUAGE}_FLAGS_RELEASE "" CACHE STRING "" FORCE)
 endforeach()
+
+check_c_compiler_flag(
+    "-fcyclomatic-complexity"
+    COMPILER_SUPPORTS_CYCLOMATIC_COMPLEXITY
+)
 
 file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/App/*.c"
@@ -81,13 +88,18 @@ target_compile_options(${FIRMWARE_NAME} PRIVATE
     $<$<AND:$<COMPILE_LANGUAGE:C>,$<CONFIG:Release>>:-g0>
     $<$<COMPILE_LANGUAGE:C>:-Wall>
     $<$<COMPILE_LANGUAGE:C>:-fstack-usage>
-    $<$<COMPILE_LANGUAGE:C>:-fcyclomatic-complexity>
     $<$<COMPILE_LANGUAGE:C>:--specs=nano.specs>
     $<$<COMPILE_LANGUAGE:ASM>:-x>
     $<$<COMPILE_LANGUAGE:ASM>:assembler-with-cpp>
     $<$<AND:$<COMPILE_LANGUAGE:ASM>,$<CONFIG:Debug>>:-g3>
     $<$<AND:$<COMPILE_LANGUAGE:ASM>,$<CONFIG:Release>>:-g0>
 )
+
+if(COMPILER_SUPPORTS_CYCLOMATIC_COMPLEXITY)
+    target_compile_options(${FIRMWARE_NAME} PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:-fcyclomatic-complexity>
+    )
+endif()
 
 target_link_options(${FIRMWARE_NAME} PRIVATE
     -mcpu=cortex-m33
