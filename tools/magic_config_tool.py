@@ -815,8 +815,14 @@ def show_touch_status(status: TouchRuntimeStatus) -> None:
             generation = "新版（支持软复位）"
         elif device.flags & PSOC_FLAG_LEGACY_FIRMWARE:
             generation = "旧版（不支持软复位）"
+        elif device.flags & PSOC_FLAG_CONNECTED:
+            generation = (
+                "识别中"
+                if status.state != 6
+                else "未知（识别失败）"
+            )
         else:
-            generation = "未知"
+            generation = "无法识别（未连接）"
 
         if device.flags & PSOC_FLAG_STATUS_VALID:
             status_text = PSOC_STATUS_NAMES.get(device.raw_status, "未知值")

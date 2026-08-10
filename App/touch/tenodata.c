@@ -28,6 +28,12 @@
 #define TENODATA_ALL_DEVICE_MASK \
     ((uint8_t)((1U << PSOC_COMM_DEVICE_COUNT) - 1U))
 
+#if defined(DEBUG) && defined(__GNUC__)
+#define TENODATA_SIZE_OPTIMIZED __attribute__((optimize("Os")))
+#else
+#define TENODATA_SIZE_OPTIMIZED
+#endif
+
 typedef enum
 {
     STATE_INIT_WAIT = 0,
@@ -66,6 +72,7 @@ static uint8_t status_valid_mask;
 static uint8_t soft_reset_supported_mask;
 static uint8_t legacy_firmware_mask;
 static uint8_t power_cycle_required_mask;
+static uint8_t firmware_detection_pending_mask;
 static uint32_t next_cdc_tick;
 static uint32_t last_probe_tick;
 static uint32_t discovery_candidate_tick;
@@ -82,6 +89,7 @@ static uint32_t reinit_start_tick;
 static bool read_inflight;
 static bool reinit_requested;
 static bool discovery_mask_locked;
+static bool firmware_detection_pass_active;
 
 _Static_assert(PSOC_COMM_DEVICE_COUNT == TENODATA_STATUS_DEVICE_COUNT,
                "PSoC status protocol requires exactly two devices");
@@ -286,6 +294,8 @@ static void enter_reinitialization_drain(void)
 
 static void request_initialization(void)
 {
+    firmware_detection_pending_mask = 0U;
+    firmware_detection_pass_active = false;
     discovery_mask_locked = false;
     enter_reinitialization_drain();
 }
@@ -300,6 +310,8 @@ static void request_initialization_for_mask(uint8_t device_mask)
 
 static void begin_running(uint8_t device_mask, uint32_t now)
 {
+    firmware_detection_pending_mask = 0U;
+    firmware_detection_pass_active = false;
     operational_device_mask =
         (uint8_t)(device_mask & TENODATA_ALL_DEVICE_MASK);
     init_target_mask = operational_device_mask;
@@ -320,6 +332,27 @@ static void begin_running(uint8_t device_mask, uint32_t now)
     last_i2c_poll_tick = now;
     last_reprobe_tick = now;
     state = STATE_RUNNING;
+}
+
+static void finish_successful_calibration(uint8_t device_mask, uint32_t now)
+{
+    uint8_t detection_mask =
+        (uint8_t)(firmware_detection_pending_mask & device_mask);
+
+    if (!firmware_detection_pass_active && (detection_mask != 0U))
+    {
+        /* Status 0 is shared by both firmware generations, so probing 0xAD
+         * there would be unsafe for legacy firmware. After the first cold
+         * calibration reaches status 2, repeat the normal initialization
+         * path once. Its existing reset verification can now distinguish a
+         * software-reset-capable PSoC from a legacy one.
+         */
+        firmware_detection_pass_active = true;
+        request_initialization_for_mask(device_mask);
+        return;
+    }
+
+    begin_running(device_mask, now);
 }
 
 static void finish_device_discovery(uint8_t device_mask, uint32_t now)
@@ -417,6 +450,7 @@ static void mark_initializing_device_unavailable(uint8_t device_index,
     mask = device_bit(device_index);
     psoc_comm_mark_disconnected(device_index);
     init_target_mask &= (uint8_t)~mask;
+    firmware_detection_pending_mask &= (uint8_t)~mask;
     recovery_forced_mask |= mask;
     read_failure_count[device_index] = 0U;
     schedule_recovery_backoff(device_index, now);
@@ -539,6 +573,8 @@ void tenodata_init(void)
     soft_reset_supported_mask = 0U;
     legacy_firmware_mask = 0U;
     power_cycle_required_mask = 0U;
+    firmware_detection_pending_mask = 0U;
+    firmware_detection_pass_active = false;
     reinit_requested = false;
     touch_pipeline_set_device_masks(pipeline_device_mask, 0U);
     start_initialization(now);
@@ -549,6 +585,7 @@ void tenodata_request_reconfigure(void)
     request_initialization();
 }
 
+TENODATA_SIZE_OPTIMIZED
 void tenodata_task(void)
 {
     uint32_t now = HAL_GetTick();
@@ -670,6 +707,11 @@ void tenodata_task(void)
                     /* Both firmware generations use status 0 while waiting
                      * for their initial configuration. No reset is needed.
                      */
+                    if (((soft_reset_supported_mask |
+                          legacy_firmware_mask) & mask) == 0U)
+                    {
+                        firmware_detection_pending_mask |= mask;
+                    }
                     reset_ready_mask |= mask;
                     power_cycle_required_mask &= (uint8_t)~mask;
                 }
@@ -750,6 +792,8 @@ void tenodata_task(void)
                         {
                             soft_reset_supported_mask |= mask;
                             legacy_firmware_mask &= (uint8_t)~mask;
+                            firmware_detection_pending_mask &=
+                                (uint8_t)~mask;
                         }
                         continue;
                     }
@@ -776,7 +820,24 @@ void tenodata_task(void)
                             reset_ready_mask |= mask;
                             legacy_firmware_mask |= mask;
                             soft_reset_supported_mask &= (uint8_t)~mask;
-                            power_cycle_required_mask |= mask;
+                            if (firmware_detection_pass_active &&
+                                ((firmware_detection_pending_mask & mask) !=
+                                 0U))
+                            {
+                                /* The first cold-start pass already applied
+                                 * this configuration successfully. This
+                                 * second pass only identifies the firmware,
+                                 * so legacy hardware does not need another
+                                 * power cycle.
+                                 */
+                                power_cycle_required_mask &= (uint8_t)~mask;
+                            }
+                            else
+                            {
+                                power_cycle_required_mask |= mask;
+                            }
+                            firmware_detection_pending_mask &=
+                                (uint8_t)~mask;
                         }
                         else if (reset_timed_out)
                         {
@@ -947,7 +1008,7 @@ void tenodata_task(void)
                 else if ((confirmed_calibrated_mask & init_target_mask) ==
                          init_target_mask)
                 {
-                    begin_running(init_target_mask, now);
+                    finish_successful_calibration(init_target_mask, now);
                 }
             }
             break;
