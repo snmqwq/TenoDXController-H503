@@ -24,9 +24,6 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
-tools/.venv/
-tools/test_tools/build/
-tools/test_tools/dist/
 
 # Independent configuration-tool repository nested in this workspace
 TenoDXConfigurationTool/
@@ -36,4 +33,3 @@ TenoDXConfigurationTool/
 Thumbs.db
 *.swp
 *~
-tools/.idea/
