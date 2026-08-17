@@ -41,8 +41,8 @@ set(TINYUSB_SOURCES
     tinyusb/class/hid/hid_device.c
     tinyusb/common/tusb_fifo.c
     tinyusb/device/usbd.c
-    tinyusb/device/usbd_control.c
     tinyusb/portable/st/stm32_fsdev/dcd_stm32_fsdev.c
+    tinyusb/portable/st/stm32_fsdev/fsdev_common.c
 )
 
 add_executable(${FIRMWARE_NAME}

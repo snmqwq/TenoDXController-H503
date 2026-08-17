@@ -20,13 +20,13 @@
 | 功能 | 外设与引脚 | 用途 |
 | --- | --- | --- |
 | MCU | STM32H503CBT6 | 主控制器 |
-| USB | TinyUSB Device | 3 CDC + 1 HID keyboard |
+| USB | TinyUSB 0.21.0 Device | 4 CDC + 1 HID keyboard |
 | I2C1 | PB7 SDA / PB8 SCL | PSoC 触摸从机 `0x08`、`0x09` |
 | USART2 | PB4 TX / PB5 RX，115200 8N1 | PN532 |
 | USART1 | PA9 TX / PA10 RX，115200 8N1 | 调试串口，默认无输出 |
 | GPIO | PC13 | 状态灯，高电平点亮 |
 
-USB 标识为 VID `0xCAFE`、PID `0x4313`，产品名为 `TenoDX Controller`。
+USB 标识为 VID `0x0483`、PID `0x5740`、`bcdDevice=0x0100`，产品名为 `TenoDX Controller`。
 
 ## USB 接口
 
@@ -34,8 +34,19 @@ USB 标识为 VID `0xCAFE`、PID `0x4313`，产品名为 `TenoDX Controller`。
 | --- | --- | --- |
 | CDC0 | TenoDX Touch Port | 双 PSoC 触摸数据 |
 | CDC1 | TenoDX LED Port | Mai2LED 灯光协议 |
-| CDC2 | TenoDX Aime Port | Aime 主机协议与 Magic 配置协议 |
+| CDC2 | TenoDX Aime Port | Aime 主机协议 |
+| CDC3 | TenoDX Debug Port | Magic 二进制配置协议，不输出文本日志 |
 | HID0 | Keyboard | 12KRO 键盘报告 |
+
+四路 CDC 均使用兼容裁剪描述符：保留 Communication/Data 接口和一对 Bulk OUT/IN，
+删除 Notification 端点，Control Interface 的 `bNumEndpoints=0`，ACM 能力为 `0x02`。
+该结构用于减少 STM32 硬件端点占用，并以 Windows `usbser.sys` 为目标；它不发送
+`Serial_State` notification，因此不作为完整 CDC ACM 一致性声明。端点编号压缩为
+CDC0–CDC3 使用 EP1–EP4，HID 使用 EP5，连同 EP0 共占 6 个硬件端点编号。
+TinyUSB CDC 类驱动在 0.21.0 基础上保留逐实例解析 ACM 能力位的本地适配。
+
+本次接口结构调整保持 `bcdDevice=0x0100` 不变。Windows 可能继续使用旧描述符缓存；若
+刷写后仍只显示三路 CDC，请在设备管理器中卸载旧的 `TenoDX Controller` 设备实例后重新插拔。
 
 ## 按键与键盘
 
@@ -109,14 +120,14 @@ CDC0 帧固定为 70 字节：
 - PN532 使用 USART2 通信。
 - 支持 FeliCa IDm 读取。
 - 支持 MIFARE 验证及 Block 2 读取。
-- Aime 主机协议与 Magic 配置协议共用 CDC2，并由接收分流和发送队列避免响应交错。
+- Aime 主机协议独占 CDC2，不再接收或分流 Magic 配置帧。
 - USART1 调试由 `PN532_UART_DEBUG_ENABLED` 控制，默认关闭。
 
 相关参考资料保存在 `ref/Aime/`。
 
 ## Magic 配置
 
-Magic 协议通过 CDC2 通信，固定前导序列为：
+Magic 协议通过独立的 CDC3 `TenoDX Debug Port` 通信，仅承载二进制 Magic 帧，固定前导序列为：
 
 ```text
 91 3E ED 20 7C 99 58 AC
@@ -163,7 +174,7 @@ Touch 的 Flash 及 `ALL` 序列化格式固定为 `[version=2, mode, mapping[68
 
 图形化配置、控制器测试和 DFU 更新程序已迁移到独立的
 [TenoDXConfigurationTool](https://github.com/snmqwq/TenoDXConfigurationTool) 仓库。
-配置时选择 `TenoDX Aime Port`；程序支持触摸映射与 raw/Mai2Touch 模式、
+配置时选择 `TenoDX Debug Port`；程序支持触摸映射与 raw/Mai2Touch 模式、
 灯光配置、1P/2P 布局、副按键键值、双 PSoC 状态监控和系统 DFU。
 
 ## 构建
@@ -203,8 +214,8 @@ cmake --build build/firmware --parallel
 | 路径 | 内容 |
 | --- | --- |
 | `App/` | 应用模块及统一的 `app_init()` / `app_task()` 入口 |
-| `App/aime/` | PN532、Aime 协议及 CDC2 分流 |
-| `App/config/` | Magic 命令及触摸、灯光、键盘配置 |
+| `App/aime/` | PN532、Aime 协议及 CDC2 传输 |
+| `App/config/` | CDC3 Debug/Magic 传输及触摸、灯光、键盘配置 |
 | `App/touch/` | PSoC 通信、触摸判定、Mai2Touch、CDC0 路由及统一任务入口 |
 | `App/led/` | Mai2LED 控制 |
 | `App/button/` | 按键扫描与 MultiButton 封装 |
@@ -212,7 +223,7 @@ cmake --build build/firmware --parallel
 | `App/status/` | PC13 状态灯 |
 | `Core/` | CubeMX 外设初始化、中断和 HAL 接入 |
 | `Drivers/` | STM32 HAL 与 CMSIS |
-| `tinyusb/` | TinyUSB 协议栈 |
+| `tinyusb/` | TinyUSB 0.21.0 `src` 及 CDC 逐实例能力适配 |
 | `cmake/` | CMake 工具链和构建辅助脚本 |
 | `ref/` | 协议、原理图和移植参考资料 |
 
