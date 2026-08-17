@@ -295,7 +295,7 @@ void button_stop(Button* handle)
 }
 
 /**
-  * @brief  Background ticks, timer repeat invoking interval 5ms
+  * @brief  Background ticks, invoked every TICKS_INTERVAL milliseconds
   *         Callbacks are executed outside the lock so they may safely
   *         call button_start()/button_stop() without deadlock risk.
   * @param  None

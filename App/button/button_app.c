@@ -5,7 +5,7 @@
 #include "main.h"
 #include "third_party/multi_button.h"
 
-#define BUTTON_APP_TICK_INTERVAL_MS  5U
+#define BUTTON_APP_TICK_INTERVAL_MS  1U
 
 static Button buttons[BUTTON_APP_COUNT];
 static button_app_callback_t long_press_callbacks[BUTTON_APP_COUNT];
