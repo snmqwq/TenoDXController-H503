@@ -15,7 +15,7 @@
 #define MULTIBUTTON_VERSION_PATCH 1
 
 // Configuration constants - can be modified according to your needs
-#define TICKS_INTERVAL          1    // ms - timer interrupt interval
+#define TICKS_INTERVAL          2    // ms - timer interrupt interval
 #define DEBOUNCE_TICKS          3    // MAX 7 (0 ~ 7) - debounce filter depth
 #define SHORT_TICKS             (300 / TICKS_INTERVAL)   // short press threshold
 #define LONG_TICKS              (5000 / TICKS_INTERVAL)  // long press threshold
