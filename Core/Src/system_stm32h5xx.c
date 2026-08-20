@@ -128,7 +128,7 @@
   */
 
 #if !defined  (HSE_VALUE)
-  #define HSE_VALUE    (25000000UL) /*!< Value of the External oscillator in Hz */
+  #define HSE_VALUE    (8000000UL) /*!< Value of the External oscillator in Hz */
 #endif /* HSE_VALUE */
 
 #if !defined  (CSI_VALUE)
@@ -308,7 +308,7 @@ void SystemInit(void)
   *              in voltage and temperature.
   *
   *         (***) HSE_VALUE is a constant defined in stm32h5xx_hal.h file (default value
-  *              25 MHz), user has to ensure that HSE_VALUE is same as the real
+  *              8 MHz), user has to ensure that HSE_VALUE is same as the real
   *              frequency of the crystal used. Otherwise, this function may
   *              have wrong result.
   *
@@ -398,4 +398,3 @@ void SystemCoreClockUpdate(void)
 /**
   * @}
   */
-
