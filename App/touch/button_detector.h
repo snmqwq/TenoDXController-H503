@@ -8,8 +8,10 @@ typedef struct {
     bool is_pressed;
 
     /* A-zone per-channel state */
+    int frames_seen;
     float a_baseline;
     bool a_baseline_initialized;
+    float a_setup_baseline;
     float a_peak;
     bool a_after_release;
     float a_valley_raw;
@@ -18,10 +20,17 @@ typedef struct {
     int a_frames_after_release;
     int a_settled_after_release_frames;
     bool a_fast_pending;
+    float a_pending_start_signal;
     float a_pending_peak;
-    char a_pending_kind;         /* 'f' = fast, 'e' = edge, 0 = none */
+    char a_pending_kind;         /* 'f'=fast, 'e'=edge, 'i'=impulse, 's'=side_edge, 'm'=side_micro */
     int a_pending_frames;
     float a_pending_max_deriv;
+    float a_pending_last_deriv;
+    int a_soft_edge_frames;
+    float a_side_edge_rise_start;
+    bool a_side_edge_rise_start_valid;
+    float a_side_edge_peak;
+    int a_side_edge_stable_frames;
 
     /* Sixteen-frame raw-value history */
     int history[16];

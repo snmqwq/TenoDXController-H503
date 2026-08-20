@@ -43,18 +43,63 @@ static void a_start_pending(ButtonDetector *d, char kind,
 {
     d->a_fast_pending = true;
     d->a_pending_kind = kind;
+    d->a_pending_start_signal = signal;
     d->a_pending_peak = signal;
     d->a_pending_frames = 0;
     d->a_pending_max_deriv = (deriv > 0.0f) ? deriv : 0.0f;
+    d->a_pending_last_deriv = deriv;
 }
 
 static void a_clear_pending(ButtonDetector *d)
 {
     d->a_fast_pending = false;
     d->a_pending_kind = 0;
+    d->a_pending_start_signal = 0.0f;
     d->a_pending_peak = 0.0f;
     d->a_pending_frames = 0;
     d->a_pending_max_deriv = 0.0f;
+    d->a_pending_last_deriv = 0.0f;
+}
+
+static void a_clear_side_edge(ButtonDetector *d)
+{
+    d->a_side_edge_rise_start_valid = false;
+    d->a_side_edge_rise_start = 0.0f;
+    d->a_side_edge_peak = 0.0f;
+    d->a_side_edge_stable_frames = 0;
+}
+
+static void a_update_side_edge(ButtonDetector *d, float setup_signal, float deriv)
+{
+    if (d->a_after_release ||
+        d->frames_seen <= DETECTOR_A_SIDE_EDGE_ARM_FRAMES ||
+        setup_signal < DETECTOR_A_SIDE_EDGE_RESET_ON ||
+        setup_signal > DETECTOR_A_SIDE_EDGE_MAX_ON ||
+        deriv < DETECTOR_A_SIDE_EDGE_FALL_DERIV)
+    {
+        a_clear_side_edge(d);
+        return;
+    }
+
+    if (!d->a_side_edge_rise_start_valid) {
+        d->a_side_edge_rise_start = setup_signal;
+        d->a_side_edge_peak = setup_signal;
+        d->a_side_edge_stable_frames = 0;
+        d->a_side_edge_rise_start_valid = true;
+    } else {
+        if (setup_signal < d->a_side_edge_rise_start)
+            d->a_side_edge_rise_start = setup_signal;
+        if (setup_signal > d->a_side_edge_peak)
+            d->a_side_edge_peak = setup_signal;
+    }
+
+    if (setup_signal >= DETECTOR_A_SIDE_EDGE_ON &&
+        fabsf(deriv) <= DETECTOR_A_SIDE_EDGE_MAX_DERIV)
+    {
+        d->a_side_edge_stable_frames++;
+    } else {
+        d->a_side_edge_stable_frames = 0;
+    }
 }
 
 static void a_confirm_press(ButtonDetector *d, float signal)
@@ -66,6 +111,8 @@ static void a_confirm_press(ButtonDetector *d, float signal)
     d->a_quick_repress_armed = false;
     d->a_frames_after_release = 0;
     d->a_settled_after_release_frames = 0;
+    d->a_soft_edge_frames = 0;
+    a_clear_side_edge(d);
     a_clear_pending(d);
 }
 
@@ -94,21 +141,26 @@ bool detector_process_frame(ButtonDetector *d,
      *  A-zone
      * ================================================================ */
     if (block == 'A') {
+        d->frames_seen++;
+
         float raw = (float)current_val;
         float d_val = (float)deriv;
 
         /* --- baseline init --- */
         if (!d->a_baseline_initialized) {
             d->a_baseline = (float)setup_raw;
+            d->a_setup_baseline = d->a_baseline;
             d->a_baseline_initialized = true;
             d->a_peak = 0.0f;
             d->a_after_release = false;
             d->a_valley_raw = raw;
             d->a_valley_valid = true;
             a_clear_pending(d);
+            a_clear_side_edge(d);
         }
 
         float signal = raw - d->a_baseline;
+        float setup_signal = raw - d->a_setup_baseline;
 
         /* ============================================================
          *  PRESSED
@@ -151,6 +203,8 @@ bool detector_process_frame(ButtonDetector *d,
                 d->a_frames_after_release = 0;
                 d->a_settled_after_release_frames = 0;
                 d->a_peak = 0.0f;
+                d->a_soft_edge_frames = 0;
+                a_clear_side_edge(d);
                 a_clear_pending(d);
             } else {
                 on = true;
@@ -231,10 +285,15 @@ bool detector_process_frame(ButtonDetector *d,
             else if (d->a_fast_pending) {
                 d->a_pending_frames++;
 
+                float previous_pending_peak = d->a_pending_peak;
+                float previous_pending_max_deriv = d->a_pending_max_deriv;
+                float previous_pending_deriv = d->a_pending_last_deriv;
+
                 if (signal > d->a_pending_peak)
                     d->a_pending_peak = signal;
                 if (d_val > d->a_pending_max_deriv)
                     d->a_pending_max_deriv = d_val;
+                d->a_pending_last_deriv = d_val;
 
                 /* fast_confirm */
                 bool fast_confirm =
@@ -246,17 +305,109 @@ bool detector_process_frame(ButtonDetector *d,
                         d->a_pending_max_deriv *
                             DETECTOR_A_APPROACH_DERIV_RATIO));
 
+                /* fast_medium_confirm */
+                bool fast_medium_confirm =
+                    (d->a_pending_kind == 'f') &&
+                    (d->a_pending_frames >= 1) &&
+                    (d->a_pending_max_deriv >= (float)DETECTOR_A_FAST_MEDIUM_PEAK_DERIV) &&
+                    (signal >= (float)DETECTOR_A_FAST_MEDIUM_ON) &&
+                    (signal <= (float)DETECTOR_A_FAST_MEDIUM_MAX_ON) &&
+                    (d_val >= (float)DETECTOR_A_FAST_MEDIUM_MIN_DERIV) &&
+                    (d_val <= (float)DETECTOR_A_FAST_MEDIUM_MAX_DERIV) &&
+                    ((signal - previous_pending_peak >= (float)DETECTOR_A_FAST_MEDIUM_RISE) ||
+                     (signal - d->a_pending_start_signal >= (float)DETECTOR_A_FAST_MEDIUM_TOTAL_RISE));
+
+                /* fast_glance_confirm */
+                bool fast_glance_confirm =
+                    d->a_after_release &&
+                    (d->a_pending_kind == 'f') &&
+                    (d->a_pending_frames >= 1) &&
+                    (d->a_pending_frames <= DETECTOR_A_FAST_GLANCE_MAX_FRAMES) &&
+                    (previous_pending_max_deriv >= (float)DETECTOR_A_FAST_GLANCE_PEAK_DERIV) &&
+                    (signal >= (float)DETECTOR_A_FAST_GLANCE_ON) &&
+                    (signal - d->a_pending_start_signal >= (float)DETECTOR_A_FAST_GLANCE_RISE) &&
+                    (d_val >= (float)DETECTOR_A_FAST_GLANCE_DERIV) &&
+                    (d_val <= previous_pending_max_deriv * DETECTOR_A_GLANCE_DERIV_RATIO);
+
+                /* fast_sweep_confirm */
+                bool fast_sweep_confirm =
+                    d->a_after_release &&
+                    (d->a_pending_kind == 'f') &&
+                    (d->a_pending_frames >= 2) &&
+                    (d->a_pending_frames <= DETECTOR_A_FAST_SWEEP_MAX_FRAMES) &&
+                    (rise_from_valley >= (float)DETECTOR_A_FAST_SWEEP_REARM_RISE) &&
+                    (previous_pending_max_deriv >= (float)DETECTOR_A_FAST_SWEEP_PEAK_DERIV) &&
+                    (previous_pending_peak >= (float)DETECTOR_A_FAST_SWEEP_ON) &&
+                    (signal >= (float)DETECTOR_A_FAST_SWEEP_FALL_SIGNAL) &&
+                    (d_val <= (float)DETECTOR_A_FAST_SWEEP_FALL_DERIV);
+
+                /* fast_sweep_accelerate */
+                bool fast_sweep_accelerate =
+                    (d->a_pending_kind == 'f') &&
+                    (d->a_pending_frames >= 1) &&
+                    (previous_pending_deriv >= (float)DETECTOR_A_FAST_SWEEP_ACCELERATE_PEAK_DERIV) &&
+                    (d_val >= 0) &&
+                    (d_val <= previous_pending_deriv * DETECTOR_A_FAST_SWEEP_ACCELERATE_DERIV_RATIO) &&
+                    (signal >= (d->a_after_release
+                        ? (float)DETECTOR_A_POST_RELEASE_FAST_SWEEP_ACCELERATE_ON
+                        : (float)DETECTOR_A_FAST_SWEEP_ACCELERATE_ON));
+
                 /* edge_confirm */
                 bool edge_confirm =
                     (d->a_pending_kind == 'e') &&
-                    (d->a_pending_frames >=
-                        DETECTOR_A_EDGE_CONFIRM_FRAMES) &&
+                    (d->a_pending_frames >= DETECTOR_A_EDGE_CONFIRM_FRAMES) &&
                     (signal >= (float)DETECTOR_A_EDGE_SOLID_ON) &&
                     (d_val >= -10.0f) &&
                     (d_val <= max_float(
                         (float)DETECTOR_A_LARGE_CONFIRM_DERIV,
                         d->a_pending_max_deriv *
                             DETECTOR_A_APPROACH_DERIV_RATIO));
+
+                /* edge_glance_confirm */
+                bool edge_glance_confirm =
+                    d->a_after_release &&
+                    (d->a_pending_kind == 'e') &&
+                    (d->a_pending_frames >= 1) &&
+                    (d->a_pending_frames <= DETECTOR_A_EDGE_GLANCE_MAX_FRAMES) &&
+                    (previous_pending_max_deriv >= (float)DETECTOR_A_EDGE_GLANCE_PEAK_DERIV) &&
+                    (signal >= (float)DETECTOR_A_EDGE_GLANCE_ON) &&
+                    (signal - d->a_pending_start_signal >= (float)DETECTOR_A_EDGE_GLANCE_RISE) &&
+                    (d_val >= (float)DETECTOR_A_EDGE_GLANCE_DERIV) &&
+                    (d_val <= previous_pending_max_deriv * DETECTOR_A_GLANCE_DERIV_RATIO);
+
+                /* edge_ramp_confirm */
+                bool edge_ramp_confirm =
+                    d->a_after_release &&
+                    (d->a_pending_kind == 'e') &&
+                    (d->a_pending_frames >= DETECTOR_A_EDGE_RAMP_MIN_FRAMES) &&
+                    (previous_pending_max_deriv >= (float)DETECTOR_A_EDGE_RAMP_PEAK_DERIV) &&
+                    (previous_pending_max_deriv <= (float)DETECTOR_A_EDGE_RAMP_MAX_PEAK_DERIV) &&
+                    (setup_signal >= (float)DETECTOR_A_EDGE_RAMP_ON) &&
+                    (setup_signal <= (float)DETECTOR_A_EDGE_RAMP_MAX_ON) &&
+                    (d_val >= 0) &&
+                    (d_val <= (float)DETECTOR_A_EDGE_RAMP_MAX_DERIV) &&
+                    (d_val <= previous_pending_max_deriv * DETECTOR_A_EDGE_RAMP_DERIV_RATIO);
+
+                /* side_edge_confirm */
+                bool side_edge_confirm =
+                    (d->a_pending_kind == 's') &&
+                    (d->a_pending_frames >= 1) &&
+                    (d->a_pending_peak >= DETECTOR_A_SIDE_EDGE_ON) &&
+                    (DETECTOR_A_SIDE_EDGE_ON <= setup_signal) &&
+                    (setup_signal <= DETECTOR_A_SIDE_EDGE_MAX_ON) &&
+                    ((setup_signal <= previous_pending_peak) || (d_val <= 0)) &&
+                    ((fabsf(d_val) <= DETECTOR_A_SIDE_EDGE_MAX_DERIV) ||
+                     ((d_val >= DETECTOR_A_SIDE_EDGE_FALL_DERIV) && (d_val <= 0)));
+
+                /* side_micro_confirm */
+                bool side_micro_confirm =
+                    (d->a_pending_kind == 'm') &&
+                    (d->a_pending_frames >= 1) &&
+                    (d->a_pending_peak <= DETECTOR_A_SIDE_EDGE_MICRO_MAX_ON) &&
+                    (DETECTOR_A_SIDE_EDGE_ON <= setup_signal) &&
+                    (setup_signal <= DETECTOR_A_SIDE_EDGE_MICRO_MAX_ON) &&
+                    ((fabsf(d_val) <= DETECTOR_A_SIDE_EDGE_MAX_DERIV) ||
+                     ((d_val >= DETECTOR_A_SIDE_EDGE_FALL_DERIV) && (d_val <= 0)));
 
                 /* edge_fall_confirm */
                 float edge_tap_peak =
@@ -272,47 +423,128 @@ bool detector_process_frame(ButtonDetector *d,
                     (d_val >= (float)DETECTOR_A_EDGE_FALL_DERIV) &&
                     (d_val <= 0.0f);
 
-                if (fast_confirm || edge_confirm || edge_fall_confirm) {
+                /* impulse_confirm */
+                bool impulse_confirm =
+                    (d->a_pending_kind == 'i') &&
+                    (d->a_pending_frames >= 1) &&
+                    ((signal - previous_pending_peak >= (float)DETECTOR_A_IMPULSE_CONFIRM_RISE) ||
+                     (signal >= (float)DETECTOR_A_IMPULSE_CONFIRM_ON) ||
+                     (d_val >= (float)DETECTOR_A_IMPULSE_CONFIRM_DERIV));
+
+                if (fast_confirm || fast_medium_confirm || fast_glance_confirm ||
+                    fast_sweep_confirm || fast_sweep_accelerate ||
+                    edge_confirm || edge_glance_confirm || edge_ramp_confirm ||
+                    side_edge_confirm || side_micro_confirm ||
+                    edge_fall_confirm || impulse_confirm)
+                {
                     on = true;
-                    a_confirm_press(d,
-                        max_float(d->a_pending_peak, signal));
-                } else if (d_val >= -40.0f && d_val <= 0.0f) {
+                    a_confirm_press(d, max_float(d->a_pending_peak, signal));
+                }
+                else if (d_val >= -40.0f && d_val <= 0.0f) {
                     if (d->a_pending_peak >= edge_tap_peak) {
                         on = true;
-                        a_confirm_press(d,
-                            max_float(d->a_pending_peak, signal));
+                        a_confirm_press(d, max_float(d->a_pending_peak, signal));
                     } else {
                         on = false;
                     }
                     a_clear_pending(d);
-                } else if (d_val < (float)DETECTOR_A_EDGE_FALL_DERIV) {
+                }
+                else if (d_val < (float)DETECTOR_A_EDGE_FALL_DERIV) {
                     on = false;
                     a_clear_pending(d);
-                } else if (signal < (float)DETECTOR_A_FAST_PENDING_CANCEL) {
+                }
+                else if (signal < (float)DETECTOR_A_FAST_PENDING_CANCEL) {
                     on = false;
                     a_clear_pending(d);
-                } else {
+                }
+                else {
                     on = false;
                 }
             }
             /* --- entry to pending --- */
             else {
+                a_update_side_edge(d, setup_signal, d_val);
+
                 bool edge_candidate =
                     (signal >= (float)DETECTOR_A_EDGE_CANDIDATE_ON) &&
                     (d_val >= (float)DETECTOR_A_EDGE_MIN_DERIV);
 
+                bool impulse_candidate =
+                    (signal >= (float)DETECTOR_A_IMPULSE_ON) &&
+                    (d_val >= (float)DETECTOR_A_IMPULSE_DERIV);
+
+                bool release_tail =
+                    d->a_after_release &&
+                    (d_val <= 0) &&
+                    (rise_from_valley < (float)DETECTOR_A_RELEASE_TAIL_REARM_RISE);
+
                 bool falling_edge_candidate =
+                    !release_tail &&
                     (signal >= (float)DETECTOR_A_EDGE_TAP_PEAK) &&
                     (d_val >= (float)DETECTOR_A_EDGE_FALL_DERIV) &&
                     (d_val <= 0.0f);
 
-                if (edge_candidate || falling_edge_candidate) {
-                    char kind = (signal >= (float)DETECTOR_A_LARGE_ON ||
-                                 d_val >= (float)DETECTOR_A_FAST_RISE_DERIV)
-                                    ? 'f' : 'e';
+                bool soft_edge_hold =
+                    !d->a_after_release &&
+                    (setup_signal >= (float)DETECTOR_A_SOFT_EDGE_ON) &&
+                    (setup_signal <= DETECTOR_A_SOFT_EDGE_MAX_ON) &&
+                    (fabsf(d_val) <= (float)DETECTOR_A_SOFT_EDGE_MAX_DERIV);
+
+                bool has_side_edge_rise = d->a_side_edge_rise_start_valid;
+
+                bool micro_side_edge =
+                    has_side_edge_rise &&
+                    (d->a_setup_baseline >= (float)DETECTOR_A_SIDE_EDGE_BASELINE_MIN) &&
+                    (d->a_side_edge_peak <= (float)DETECTOR_A_SIDE_EDGE_MICRO_MAX_ON) &&
+                    (d->a_side_edge_rise_start <= (float)DETECTOR_A_SIDE_EDGE_MICRO_START_MAX_ON) &&
+                    (d->a_side_edge_peak - d->a_side_edge_rise_start >= (float)DETECTOR_A_SIDE_EDGE_MICRO_MIN_RISE);
+
+                bool high_side_edge =
+                    has_side_edge_rise &&
+                    (d->a_setup_baseline >= (float)DETECTOR_A_SIDE_EDGE_BASELINE_MIN) &&
+                    (d->a_side_edge_peak >= (float)DETECTOR_A_SIDE_EDGE_HIGH_ON) &&
+                    (d->a_side_edge_peak - d->a_side_edge_rise_start >= (float)DETECTOR_A_SIDE_EDGE_HIGH_MIN_RISE);
+
+                bool side_edge_candidate =
+                    !d->a_after_release &&
+                    has_side_edge_rise &&
+                    (micro_side_edge || high_side_edge) &&
+                    (d->a_side_edge_stable_frames >= DETECTOR_A_SIDE_EDGE_MIN_STABLE_FRAMES) &&
+                    (DETECTOR_A_SIDE_EDGE_ON <= setup_signal) &&
+                    (setup_signal <= DETECTOR_A_SIDE_EDGE_MAX_ON) &&
+                    (fabsf(d_val) <= DETECTOR_A_SIDE_EDGE_MAX_DERIV);
+
+                if (impulse_candidate || edge_candidate || falling_edge_candidate) {
+                    d->a_soft_edge_frames = 0;
+                    a_clear_side_edge(d);
+                    char kind;
+                    if (impulse_candidate)
+                        kind = 'i';
+                    else if (signal >= (float)DETECTOR_A_LARGE_ON || d_val >= (float)DETECTOR_A_FAST_RISE_DERIV)
+                        kind = 'f';
+                    else
+                        kind = 'e';
                     a_start_pending(d, kind, signal, d_val);
                     on = false;
-                } else {
+                }
+                else if (side_edge_candidate) {
+                    d->a_soft_edge_frames = 0;
+                    float side_signal = max_float(signal, setup_signal);
+                    char side_kind = (micro_side_edge && !high_side_edge) ? 'm' : 's';
+                    a_start_pending(d, side_kind, side_signal, d_val);
+                    on = false;
+                }
+                else if (soft_edge_hold) {
+                    d->a_soft_edge_frames++;
+                    if (d->a_soft_edge_frames >= DETECTOR_A_SOFT_EDGE_CONFIRM_FRAMES) {
+                        on = true;
+                        a_confirm_press(d, max_float(signal, setup_signal));
+                    } else {
+                        on = false;
+                    }
+                }
+                else {
+                    d->a_soft_edge_frames = 0;
                     on = false;
                 }
             }
@@ -324,11 +556,9 @@ bool detector_process_frame(ButtonDetector *d,
     else if (block == 'C') {
         int diff = current_val - setup_raw;
 
-        if (diff > DETECTOR_C_DIFF_THRESHOLD ||
-            deriv > DETECTOR_C_DERIV_THRESHOLD)
+        if (diff > 40 || deriv > 35)
             on = true;
-        if (deriv < DETECTOR_C_DERIV_RELEASE ||
-            diff < DETECTOR_C_DIFF_RELEASE)
+        if (deriv < -20 || diff < 15)
             on = false;
     }
     /* ================================================================
@@ -337,8 +567,8 @@ bool detector_process_frame(ButtonDetector *d,
     else if (block == 'B') {
         int diff = current_val - setup_raw;
 
-        if (diff > DETECTOR_B_DIFF_THRESHOLD) on = true;
-        if (deriv < DETECTOR_B_DERIV_RELEASE) on = false;
+        if (diff > 16) on = true;
+        if (deriv < -15) on = false;
     }
     /* ================================================================
      *  D-zone
@@ -346,8 +576,8 @@ bool detector_process_frame(ButtonDetector *d,
     else if (block == 'D') {
         int diff = current_val - setup_raw;
 
-        if (diff > DETECTOR_D_DIFF_THRESHOLD) on = true;
-        if (deriv < DETECTOR_D_DERIV_RELEASE) on = false;
+        if (diff > 20) on = true;
+        if (deriv < -20) on = false;
     }
     /* ================================================================
      *  E-zone
@@ -355,8 +585,8 @@ bool detector_process_frame(ButtonDetector *d,
     else if (block == 'E') {
         int diff = current_val - setup_raw;
 
-        if (diff > DETECTOR_E_DIFF_THRESHOLD) on = true;
-        if (deriv < DETECTOR_E_DERIV_RELEASE) on = false;
+        if (diff > 10) on = true;
+        if (deriv < -16) on = false;
     }
     /* ================================================================
      *  Unknown block
