@@ -16,27 +16,68 @@ enum
   ITF_NUM_CDC1_DATA,
   ITF_NUM_CDC2,
   ITF_NUM_CDC2_DATA,
+  ITF_NUM_CDC3,
+  ITF_NUM_CDC3_DATA,
   ITF_NUM_HID,
   ITF_NUM_TOTAL
 };
 
+#define APP_TUD_CDC_COMPAT_DESC_LEN \
+  (8 + 9 + 5 + 5 + 4 + 5 + 9 + 7 + 7)
+
+#define APP_TUD_CDC_COMPAT_DESCRIPTOR( \
+    _itfnum, _stridx, _epout, _epin, _epsize) \
+  /* Interface Association Descriptor */ \
+  8, TUSB_DESC_INTERFACE_ASSOCIATION, \
+  _itfnum, 2, \
+  TUSB_CLASS_CDC, CDC_COMM_SUBCLASS_ABSTRACT_CONTROL_MODEL, \
+  CDC_COMM_PROTOCOL_NONE, 0, \
+  /* CDC Control Interface */ \
+  9, TUSB_DESC_INTERFACE, \
+  _itfnum, 0, 0, \
+  TUSB_CLASS_CDC, CDC_COMM_SUBCLASS_ABSTRACT_CONTROL_MODEL, \
+  CDC_COMM_PROTOCOL_NONE, _stridx, \
+  /* CDC Header Functional Descriptor */ \
+  5, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_HEADER, \
+  U16_TO_U8S_LE(0x0120), \
+  /* Call Management Functional Descriptor */ \
+  5, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_CALL_MANAGEMENT, \
+  0, (uint8_t)((_itfnum) + 1), \
+  /* Accept line coding and control-line-state requests. */ \
+  4, TUSB_DESC_CS_INTERFACE, \
+  CDC_FUNC_DESC_ABSTRACT_CONTROL_MANAGEMENT, 0x02, \
+  /* Union Functional Descriptor */ \
+  5, TUSB_DESC_CS_INTERFACE, CDC_FUNC_DESC_UNION, \
+  _itfnum, (uint8_t)((_itfnum) + 1), \
+  /* CDC Data Interface */ \
+  9, TUSB_DESC_INTERFACE, \
+  (uint8_t)((_itfnum) + 1), 0, 2, \
+  TUSB_CLASS_CDC_DATA, 0, 0, 0, \
+  /* Bulk OUT */ \
+  7, TUSB_DESC_ENDPOINT, _epout, TUSB_XFER_BULK, \
+  U16_TO_U8S_LE(_epsize), 0, \
+  /* Bulk IN */ \
+  7, TUSB_DESC_ENDPOINT, _epin, TUSB_XFER_BULK, \
+  U16_TO_U8S_LE(_epsize), 0
+
 #define CONFIG_TOTAL_LEN  \
-  (TUD_CONFIG_DESC_LEN + 3 * TUD_CDC_DESC_LEN + TUD_HID_DESC_LEN)
+  (TUD_CONFIG_DESC_LEN + 4 * APP_TUD_CDC_COMPAT_DESC_LEN + \
+   TUD_HID_DESC_LEN)
 
 // Endpoint Address
-#define EPNUM_CDC0_NOTIF   0x82
 #define EPNUM_CDC0_OUT     0x01
 #define EPNUM_CDC0_IN      0x81
 
-#define EPNUM_CDC1_NOTIF   0x84
-#define EPNUM_CDC1_OUT     0x03
-#define EPNUM_CDC1_IN      0x83
+#define EPNUM_CDC1_OUT     0x02
+#define EPNUM_CDC1_IN      0x82
 
-#define EPNUM_CDC2_NOTIF   0x86
-#define EPNUM_CDC2_OUT     0x05
-#define EPNUM_CDC2_IN      0x85
+#define EPNUM_CDC2_OUT     0x03
+#define EPNUM_CDC2_IN      0x83
 
-#define EPNUM_HID_IN       0x87
+#define EPNUM_CDC3_OUT     0x04
+#define EPNUM_CDC3_IN      0x84
+
+#define EPNUM_HID_IN       0x85
 
 tusb_desc_device_t const desc_device =
 {
@@ -132,42 +173,45 @@ uint8_t const desc_configuration[] =
   ),
 
   // CDC0
-  TUD_CDC_DESCRIPTOR(
+  APP_TUD_CDC_COMPAT_DESCRIPTOR(
     ITF_NUM_CDC0,
     4,
-    EPNUM_CDC0_NOTIF,
-    8,
     EPNUM_CDC0_OUT,
     EPNUM_CDC0_IN,
     64
   ),
 
   // CDC1
-  TUD_CDC_DESCRIPTOR(
+  APP_TUD_CDC_COMPAT_DESCRIPTOR(
     ITF_NUM_CDC1,
     5,
-    EPNUM_CDC1_NOTIF,
-    8,
     EPNUM_CDC1_OUT,
     EPNUM_CDC1_IN,
     64
   ),
 
   // CDC2
-  TUD_CDC_DESCRIPTOR(
+  APP_TUD_CDC_COMPAT_DESCRIPTOR(
     ITF_NUM_CDC2,
     6,
-    EPNUM_CDC2_NOTIF,
-    8,
     EPNUM_CDC2_OUT,
     EPNUM_CDC2_IN,
+    64
+  ),
+
+  // CDC3 Debug (Magic protocol only)
+  APP_TUD_CDC_COMPAT_DESCRIPTOR(
+    ITF_NUM_CDC3,
+    7,
+    EPNUM_CDC3_OUT,
+    EPNUM_CDC3_IN,
     64
   ),
 
   // HID Keyboard
   TUD_HID_DESCRIPTOR(
     ITF_NUM_HID,
-    7,
+    8,
     HID_ITF_PROTOCOL_KEYBOARD,
     sizeof(desc_hid_report),
     EPNUM_HID_IN,
@@ -175,6 +219,9 @@ uint8_t const desc_configuration[] =
     10
   )
 };
+
+_Static_assert(sizeof(desc_configuration) == CONFIG_TOTAL_LEN,
+               "USB configuration descriptor length mismatch");
 
 uint8_t const * tud_descriptor_configuration_cb(uint8_t index)
 {
@@ -195,6 +242,7 @@ char const * string_desc_arr[] =
   "TenoDX Touch Port",
   "TenoDX LED Port",
   "TenoDX Aime Port",
+  "TenoDX Debug Port",
   "HID Keyboard"
 };
 

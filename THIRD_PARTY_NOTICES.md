@@ -7,7 +7,7 @@
 | STM32H5 HAL Driver | `Drivers/STM32H5xx_HAL_Driver/` | BSD-3-Clause | STMicroelectronics；许可证见组件目录 |
 | CMSIS Core | `Drivers/CMSIS/` | Apache-2.0 | Arm Limited；许可证见组件目录 |
 | STM32H5 CMSIS Device | `Drivers/CMSIS/Device/ST/STM32H5xx/` | Apache-2.0 | STMicroelectronics；许可证见组件目录 |
-| TinyUSB | `tinyusb/` | MIT | [hathach/tinyusb](https://github.com/hathach/tinyusb)；许可文本保留在源文件头中 |
+| TinyUSB 0.21.0 | `tinyusb/` | MIT | [hathach/tinyusb](https://github.com/hathach/tinyusb)；基于上游 `src`，`class/cdc/cdc_device.c` 包含逐实例 ACM 能力解析适配，许可文本保留在源文件头中 |
 | MultiButton | `App/button/third_party/` | MIT | [0x1abin/MultiButton](https://github.com/0x1abin/MultiButton)；许可证见同目录 `LICENSE` |
 | STM32CubeMX / STM32CubeIDE 生成代码 | `Core/` | 对应 STM32Cube 软件包条款 | STMicroelectronics；保留各文件版权与许可声明 |
 

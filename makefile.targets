@@ -1,7 +1,7 @@
 # Project-specific targets included by STM32CubeIDE generated makefiles.
 
 POWERSHELL ?= powershell.exe
-FIRMWARE_STAMP_SCRIPT := ../tools/stamp_firmware.ps1
+FIRMWARE_STAMP_SCRIPT := ../cmake/stamp_firmware.ps1
 
 .PHONY: timestamped-firmware
 

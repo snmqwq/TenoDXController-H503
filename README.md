@@ -20,13 +20,13 @@
 | 功能 | 外设与引脚 | 用途 |
 | --- | --- | --- |
 | MCU | STM32H503CBT6 | 主控制器 |
-| USB | TinyUSB Device | 3 CDC + 1 HID keyboard |
+| USB | TinyUSB 0.21.0 Device | 4 CDC + 1 HID keyboard |
 | I2C1 | PB7 SDA / PB8 SCL | PSoC 触摸从机 `0x08`、`0x09` |
 | USART2 | PB4 TX / PB5 RX，115200 8N1 | PN532 |
 | USART1 | PA9 TX / PA10 RX，115200 8N1 | 调试串口，默认无输出 |
 | GPIO | PC13 | 状态灯，高电平点亮 |
 
-USB 标识为 VID `0xCAFE`、PID `0x4313`，产品名为 `TenoDX Controller`。
+USB 标识为 VID `0x0483`、PID `0x5740`、`bcdDevice=0x0100`，产品名为 `TenoDX Controller`。
 
 ## USB 接口
 
@@ -34,8 +34,19 @@ USB 标识为 VID `0xCAFE`、PID `0x4313`，产品名为 `TenoDX Controller`。
 | --- | --- | --- |
 | CDC0 | TenoDX Touch Port | 双 PSoC 触摸数据 |
 | CDC1 | TenoDX LED Port | Mai2LED 灯光协议 |
-| CDC2 | TenoDX Aime Port | Aime 主机协议与 Magic 配置协议 |
+| CDC2 | TenoDX Aime Port | Aime 主机协议 |
+| CDC3 | TenoDX Debug Port | Magic 二进制配置协议，不输出文本日志 |
 | HID0 | Keyboard | 12KRO 键盘报告 |
+
+四路 CDC 均使用兼容裁剪描述符：保留 Communication/Data 接口和一对 Bulk OUT/IN，
+删除 Notification 端点，Control Interface 的 `bNumEndpoints=0`，ACM 能力为 `0x02`。
+该结构用于减少 STM32 硬件端点占用，并以 Windows `usbser.sys` 为目标；它不发送
+`Serial_State` notification，因此不作为完整 CDC ACM 一致性声明。端点编号压缩为
+CDC0–CDC3 使用 EP1–EP4，HID 使用 EP5，连同 EP0 共占 6 个硬件端点编号。
+TinyUSB CDC 类驱动在 0.21.0 基础上保留逐实例解析 ACM 能力位的本地适配。
+
+本次接口结构调整保持 `bcdDevice=0x0100` 不变。Windows 可能继续使用旧描述符缓存；若
+刷写后仍只显示三路 CDC，请在设备管理器中卸载旧的 `TenoDX Controller` 设备实例后重新插拔。
 
 ## 按键与键盘
 
@@ -89,7 +100,7 @@ CDC0 帧固定为 70 字节：
 
 设备掉线后会自动重新检测；未连接设备对应的 raw 数据区域填充 `00`。启动时会等待 500 ms 确认单设备或无设备状态；确认后，一片 PSoC 缺失时另一片继续运行，并将缺失设备 17 个通道当前映射到的 Mai2Touch 区域全部强制置 `1`。两片都缺失时，当前映射表覆盖的所有区域均置 `1`。
 
-每个已发现的 PSoC 都会先通过 I2C 写入 `[00 AD]` 请求软复位，确认其重新报告状态 `00` 后，再下发扫描配置并等待硬件校准。运行中连续 3 次读取失败会将对应设备判为离线；后台每 500 ms 快速探测一次缺失设备。恢复设备必须重新完成软复位、配置、硬件校准和软件基线，期间其区域继续保持强制置 `1`。初始化失败会按 5–60 秒退避重试，避免故障设备反复中断健康设备。仅切换 raw/Mai2Touch 输出模式不会复位或重新配置 PSoC。
+固件兼容支持和不支持 `0xAD` 软复位的两代 PSoC。冷启动时先完成配置与校准，再执行一次识别流程：支持软复位的新版会回到状态 `00`，旧版保持状态 `02` 并继续运行。后续修改扫描配置时，新版可以立即软复位并应用；旧版会标记为需要断电重启。运行中连续 3 次读取失败会将对应设备判为离线；后台每 500 ms 快速探测一次缺失设备。恢复设备必须重新完成识别、配置、硬件校准和软件基线，期间其区域继续保持强制置 `1`。初始化失败会按 5–60 秒退避重试，避免故障设备反复中断健康设备。仅切换 raw/Mai2Touch 输出模式不会复位或重新配置 PSoC。
 
 通道映射和相关资料见 `ref/Touch_Algorithm/`。
 
@@ -102,21 +113,21 @@ CDC0 帧固定为 70 字节：
 - `block` 由所选区域自动确定为 `A` / `B` / `C` / `D` / `E`，在线格式中保留用于显示和校验，同时供 Detector 与 PSoC 选择固定扫描参数，不能独立配置。
 - 最终 Mai2Touch 输出会重新汇总所有已触发通道，因此共享同一区域的任一通道保持按下时，该区域都会保持置位。
 
-更换映射表后，固件会立即清除旧触摸输出，安全等待当前 I2C 操作结束，再按完整 `init` 流程重新探测 PSoC、执行 `0xAD` 软复位、写入扫描配置、执行硬件校准并重置软件基线流程。Mai2Touch 模式会随后采集新基线；raw 模式下则在切换回 Mai2Touch 后开始采集。
+更换映射表后，固件会立即清除旧触摸输出，安全等待当前 I2C 操作结束，再按完整 `init` 流程重新探测和识别 PSoC、写入扫描配置、执行硬件校准并重置软件基线。Mai2Touch 模式会随后采集新基线；raw 模式下则在切换回 Mai2Touch 后开始采集。
 
 ## Aime 与 PN532
 
 - PN532 使用 USART2 通信。
 - 支持 FeliCa IDm 读取。
 - 支持 MIFARE 验证及 Block 2 读取。
-- Aime 主机协议与 Magic 配置协议共用 CDC2，并由接收分流和发送队列避免响应交错。
+- Aime 主机协议独占 CDC2，不再接收或分流 Magic 配置帧。
 - USART1 调试由 `PN532_UART_DEBUG_ENABLED` 控制，默认关闭。
 
 相关参考资料保存在 `ref/Aime/`。
 
 ## Magic 配置
 
-Magic 协议通过 CDC2 通信，固定前导序列为：
+Magic 协议通过独立的 CDC3 `TenoDX Debug Port` 通信，仅承载二进制 Magic 帧，固定前导序列为：
 
 ```text
 91 3E ED 20 7C 99 58 AC
@@ -161,38 +172,10 @@ Touch 的 Flash 及 `ALL` 序列化格式固定为 `[version=2, mode, mapping[68
 
 ## 配置工具
 
-配置工具需要 Python 3 和 pyserial：
-
-```powershell
-python -m pip install -r tools/requirements.txt
-python tools/magic_config_tool.py
-```
-
-连接时选择 `TenoDX Aime Port`。工具支持触摸映射与输出模式、灯光配置、1P/2P 布局、副按键键值、原始 Magic 请求和系统 DFU。
-
-常用触摸命令：
-
-```text
-touch get
-touch set 0 A1
-touch set 1 D4
-touch set-many 2 A2 3 A2 12 B4
-touch mode
-touch mode mai2touch
-touch save
-```
-
-`touch set` 和 `touch set-many` 为每个通道指定唯一的区域，`block` 自动派生；这些命令修改 RAM，需要再执行 `touch save` 才会持久化。
-
-常用键盘命令：
-
-```text
-keyboard layout 1p
-keyboard layout 2p
-keyboard set 11 enter
-keyboard set-all 3 keypad_multiply 8 9
-keyboard save
-```
+图形化配置、控制器测试和 DFU 更新程序已迁移到独立的
+[TenoDXConfigurationTool](https://github.com/snmqwq/TenoDXConfigurationTool) 仓库。
+配置时选择 `TenoDX Debug Port`；程序支持触摸映射与 raw/Mai2Touch 模式、
+灯光配置、1P/2P 布局、副按键键值、双 PSoC 状态监控和系统 DFU。
 
 ## 构建
 
@@ -208,15 +191,6 @@ keyboard save
 2. 选择 **File > Import > General > Existing Projects into Workspace**。
 3. 选择仓库根目录，不勾选 **Copy projects into workspace**。
 4. 选择 `Debug` 或 `Release` 配置并构建。
-
-构建完成后会保留 CubeIDE 的原始 BIN/HEX，并额外生成使用本地构建时间命名的副本：
-
-```text
-maimai_controller_H503_YYYYMMDD_HHMMSS.bin
-maimai_controller_H503_YYYYMMDD_HHMMSS.hex
-```
-
-同一次构建生成的 BIN 和 HEX 共用同一个时间戳，分别保存在当前 `Debug/` 或 `Release/` 目录。
 
 外设和引脚配置以 `maimai_controller_H503.ioc` 为准。
 
@@ -240,8 +214,8 @@ cmake --build build/firmware --parallel
 | 路径 | 内容 |
 | --- | --- |
 | `App/` | 应用模块及统一的 `app_init()` / `app_task()` 入口 |
-| `App/aime/` | PN532、Aime 协议及 CDC2 分流 |
-| `App/config/` | Magic 命令及触摸、灯光、键盘配置 |
+| `App/aime/` | PN532、Aime 协议及 CDC2 传输 |
+| `App/config/` | CDC3 Debug/Magic 传输及触摸、灯光、键盘配置 |
 | `App/touch/` | PSoC 通信、触摸判定、Mai2Touch、CDC0 路由及统一任务入口 |
 | `App/led/` | Mai2LED 控制 |
 | `App/button/` | 按键扫描与 MultiButton 封装 |
@@ -249,8 +223,8 @@ cmake --build build/firmware --parallel
 | `App/status/` | PC13 状态灯 |
 | `Core/` | CubeMX 外设初始化、中断和 HAL 接入 |
 | `Drivers/` | STM32 HAL 与 CMSIS |
-| `tinyusb/` | TinyUSB 协议栈 |
-| `tools/` | 配置和测试工具 |
+| `tinyusb/` | TinyUSB 0.21.0 `src` 及 CDC 逐实例能力适配 |
+| `cmake/` | CMake 工具链和构建辅助脚本 |
 | `ref/` | 协议、原理图和移植参考资料 |
 
 ## 许可证
