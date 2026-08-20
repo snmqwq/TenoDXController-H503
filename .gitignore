@@ -33,3 +33,5 @@ TenoDXConfigurationTool/
 Thumbs.db
 *.swp
 *~
+tools/.idea/
+.tmp
