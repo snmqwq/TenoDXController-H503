@@ -59,7 +59,7 @@ typedef enum {
   HCD_EVENT_XFER_COMPLETE,
 
   USBH_EVENT_FUNC_CALL, // Not an HCD event
-  HCD_EVENT_INVALID
+  HCD_EVENT_COUNT
 } hcd_eventid_t;
 
 typedef struct {
@@ -72,6 +72,7 @@ typedef struct {
     struct {
       uint8_t hub_addr;
       uint8_t hub_port;
+      uint8_t speed;
     } connection;
 
     // XFER_COMPLETE
