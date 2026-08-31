@@ -55,6 +55,7 @@ typedef enum
 
 static tenodata_state_t state;
 static uint8_t cdc_tx_frame[TENODATA_CDC_FRAME_LENGTH];
+static uint8_t status_frame_seq;
 static uint8_t host_config_payload[TENODATA_CONFIG_PAYLOAD_LENGTH];
 
 /* 上位机下发的扫描参数 (覆盖本地固定表, 重新初始化后仍生效) */
@@ -256,6 +257,15 @@ static void cdc_send_frame(uint8_t status)
                        PSOC_COMM_PAYLOAD_LENGTH);
             }
         }
+    }
+    else
+    {
+        /* 状态帧载荷恒为 0, 上位机按载荷去重会连状态字节的变化
+         * (0x02→0x01) 一起丢弃, 导致 0x01 请求配置永远不被看到。
+         * 放入递增序号使每帧载荷不同, 保证状态字节总被解析。 */
+        cdc_tx_frame[1U] = status_frame_seq;
+        cdc_tx_frame[1U + PSOC_COMM_PAYLOAD_LENGTH] = status_frame_seq;
+        status_frame_seq++;
     }
 
     for (uint8_t index = 0U;

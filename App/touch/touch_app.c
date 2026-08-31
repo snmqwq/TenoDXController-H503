@@ -72,6 +72,10 @@ bool touch_app_apply_config(TenodataChannelMapping const *mapping,
         cdc_manager_set_mai2touch_active(mai2touch_active);
         mai2touch_init();
         touch_pipeline_init();
+        /* 重走初始化流程: 切到 tenodata 模式时若无上位机配置,
+         * 进入等待下发状态并上报 0x01 提示上位机; 切到 mai2touch
+         * 模式则用本地默认参数直接初始化。 */
+        tenodata_request_reconfigure();
     }
 
     if (mapping_changed)
