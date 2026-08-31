@@ -253,13 +253,13 @@ bool dcd_edpt_open(uint8_t rhport, tusb_desc_endpoint_t const * p_endpoint_desc)
 
   /* mine the data for the information we need */
   int const dir = tu_edpt_dir(p_endpoint_desc->bEndpointAddress);
-  uint16_t const size = tu_edpt_packet_size(p_endpoint_desc);
+  int const size = tu_edpt_packet_size(p_endpoint_desc);
   tusb_xfer_type_t const type = (tusb_xfer_type_t) p_endpoint_desc->bmAttributes.xfer;
   struct xfer_ctl_t *xfer = &xfer_table[ep - USBD->EP];
 
   /* allocate buffer from USB RAM */
   ep->BUFSEG = bufseg_addr;
-  bufseg_addr += (uint32_t)size;
+  bufseg_addr += size;
   TU_ASSERT(bufseg_addr <= USBD_BUF_SIZE);
 
   /* construct USB Configuration Register value and then write it */
@@ -294,9 +294,8 @@ void dcd_edpt_close_all (uint8_t rhport)
   // TODO implement dcd_edpt_close_all()
 }
 
-bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t * buffer, uint16_t total_bytes, bool is_isr)
+bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t *buffer, uint16_t total_bytes)
 {
-  (void) is_isr;
   (void) rhport;
 
   /* mine the data for the information we need */
@@ -327,9 +326,8 @@ bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t * buffer, uint16_t t
 }
 
 #if 0 // TODO support dcd_edpt_xfer_fifo API
-bool dcd_edpt_xfer_fifo(uint8_t rhport, uint8_t ep_addr, tu_fifo_t * ff, uint16_t total_bytes, bool is_isr)
+bool dcd_edpt_xfer_fifo (uint8_t rhport, uint8_t ep_addr, tu_fifo_t * ff, uint16_t total_bytes)
 {
-  (void) is_isr;
   (void) rhport;
 
   /* mine the data for the information we need */
@@ -435,7 +433,7 @@ void dcd_int_handler(uint8_t rhport)
       /* given ACK from host has happened, we can now set the address (if not already done) */
       if((USBD->FADDR != assigned_address) && (USBD->FADDR == 0)) USBD->FADDR = assigned_address;
 
-      uint16_t const available_bytes = (uint16_t)USBD->EP[PERIPH_EP0].MXPLD;
+      uint16_t const available_bytes = USBD->EP[PERIPH_EP0].MXPLD;
 
       active_ep0_xfer = (available_bytes == xfer_table[PERIPH_EP0].max_packet_size);
 
@@ -453,7 +451,7 @@ void dcd_int_handler(uint8_t rhport)
       {
         USBD->INTSTS = mask;
 
-        uint16_t const available_bytes = (uint16_t)ep->MXPLD;
+        uint16_t const available_bytes = ep->MXPLD;
         uint8_t const ep_addr = decode_ep_addr(ep);
         bool const out_ep = !(ep_addr & TUSB_DIR_IN_MASK);
 

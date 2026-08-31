@@ -175,7 +175,7 @@ void dcd_set_address (uint8_t rhport, uint8_t dev_addr)
   (void) dev_addr;
 
   // Response with zlp status
-  dcd_edpt_xfer(rhport, 0x80, NULL, 0, false);
+  dcd_edpt_xfer(rhport, 0x80, NULL, 0);
 
   // DCD can only set address after status for this request is complete.
   // do it at dcd_edpt0_status_complete()
@@ -290,9 +290,8 @@ void dcd_edpt_close_all (uint8_t rhport)
 }
 
 // Submit a transfer, When complete dcd_event_xfer_complete() is invoked to notify the stack
-bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t * buffer, uint16_t total_bytes, bool is_isr)
+bool dcd_edpt_xfer (uint8_t rhport, uint8_t ep_addr, uint8_t * buffer, uint16_t total_bytes)
 {
-  (void) is_isr;
   (void) rhport;
 
   uint8_t const epnum = tu_edpt_number(ep_addr);
@@ -318,9 +317,8 @@ bool dcd_edpt_xfer(uint8_t rhport, uint8_t ep_addr, uint8_t * buffer, uint16_t t
 }
 
 #if 0 // TODO support dcd_edpt_xfer_fifo API
-bool dcd_edpt_xfer_fifo(uint8_t rhport, uint8_t ep_addr, tu_fifo_t * ff, uint16_t total_bytes, bool is_isr)
+bool dcd_edpt_xfer_fifo (uint8_t rhport, uint8_t ep_addr, tu_fifo_t * ff, uint16_t total_bytes)
 {
-  (void) is_isr;
   (void) rhport;
   return true;
 }
@@ -352,8 +350,8 @@ void dcd_edpt_clear_stall (uint8_t rhport, uint8_t ep_addr)
   csr_clear(epnum, UDP_CSR_FORCESTALL_Msk);
 
   // must also reset EP to clear data toggle
-  UDP->UDP_RST_EP |= (1u << epnum);
-  UDP->UDP_RST_EP &= ~(1u << epnum);
+  UDP->UDP_RST_EP |= (1 << epnum);
+  UDP->UDP_RST_EP &= ~(1 << epnum);
 }
 
 //--------------------------------------------------------------------+
@@ -436,8 +434,9 @@ void dcd_int_handler(uint8_t rhport)
         {
           // write to EP fifo
 #if 0 // TODO support dcd_edpt_xfer_fifo
-          if (xfer->ff) {
-            tu_fifo_read_n_access_mode(xfer->ff, (void *) &UDP->UDP_FDR[epnum], xact_len, true);
+          if (xfer->ff)
+          {
+            tu_fifo_read_n_const_addr_full_words(xfer->ff, (void *) &UDP->UDP_FDR[epnum], xact_len);
           }
           else
 #endif
@@ -470,8 +469,9 @@ void dcd_int_handler(uint8_t rhport)
 
         // Read from EP fifo
 #if 0 // TODO support dcd_edpt_xfer_fifo API
-        if (xfer->ff) {
-          tu_fifo_write_n_access_mode(xfer->ff, (const void *) &UDP->UDP_FDR[epnum], xact_len, true);
+        if (xfer->ff)
+        {
+          tu_fifo_write_n_const_addr_full_words(xfer->ff, (const void *) &UDP->UDP_FDR[epnum], xact_len);
         }
         else
 #endif
