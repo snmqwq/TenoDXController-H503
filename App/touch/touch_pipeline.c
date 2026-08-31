@@ -7,31 +7,46 @@
 #include <stdint.h>
 #include <string.h>
 
-// ================= 校准常量 =================
-#define CALIB_SKIP_FRAMES      10U   // 跳过前 N 帧 (PSoC 已做硬件校准, 只需短暂稳定)
-#define CALIB_COLLECT_FRAMES   30U   // 收集 N 帧取平均值作为基线
-#define PIPELINE_DEVICE_COUNT  2U
-#define PIPELINE_DEVICE_MASK   ((1U << PIPELINE_DEVICE_COUNT) - 1U)
+// ================= 管线常量 (对齐 run3 signal_pipeline.py) =================
+#define PIPELINE_IIR_FACTOR     2.0f  // 1.0 关闭平滑, >1.0 开启 (run3: 2.0)
+#define PIPELINE_WARMUP_FRAMES  100U  // 冷启动预热 (让 IIR 充分收敛)
+#define PIPELINE_CALIB_FRAMES   100U  // setup_raw 基线收集帧数
+#define PIPELINE_HISTORY_SIZE   16U
+#define PIPELINE_DEVICE_COUNT   2U
+#define PIPELINE_DEVICE_MASK    ((1U << PIPELINE_DEVICE_COUNT) - 1U)
 
 // ================= 管线状态 =================
 typedef enum {
-    PIPELINE_STATE_CALIB_SKIP,
-    PIPELINE_STATE_CALIB_COLLECT,
+    PIPELINE_STATE_WARMUP,
+    PIPELINE_STATE_CALIB,
     PIPELINE_STATE_READY,
 } PipelineState;
 
-// ================= PSoC 数据缓存 (34字节 × 2) =================
-static uint8_t last_block[2][34];
-static bool block_cache_valid[2];
+// ================= 每通道管线状态 (对齐 SignalPipeline) =================
+typedef struct {
+    float iir;                  // IIR 滤波历史 (0.0 表示未初始化)
+    int history[PIPELINE_HISTORY_SIZE];  // [0] 为最近一次有效帧值
+    float setup_sum;            // 基线校准样本累计
+    uint16_t setup_count;       // 校准样本数 (仅计数实际变化的帧)
+    float setup_raw;            // 软件基线 (校准均值)
+    bool calib_ready;
+    int latest_val;             // 最近一次 IIR 输出快照 (raw==0 强制按下用)
+} ChannelPipeline;
 
-// ================= 34 通道判定器 + 校准 =================
+static ChannelPipeline channels[TENODATA_TOTAL_CHANNELS];
 static ButtonDetector detectors[TENODATA_TOTAL_CHANNELS];
-static int32_t calib_accum[TENODATA_TOTAL_CHANNELS];
-static uint16_t calib_skip_count[PIPELINE_DEVICE_COUNT];
-static uint16_t calib_per_ch_count[TENODATA_TOTAL_CHANNELS];
-static bool calib_ready[TENODATA_TOTAL_CHANNELS];
-static int32_t setup_raw[TENODATA_TOTAL_CHANNELS];
+
+/* 对齐 run3 GameCommunicator.touch_state: 每游戏区域一位,
+ * 仅由实际变化的通道覆写 (同一区域多通道时最后写入者胜)。 */
+static bool region_state[TENODATA_MAI2TOUCH_REGION_COUNT];
+
+// ================= 逐设备帧去重缓存 (对齐 SerialReader 的逐设备 payload 对比) =================
+static uint8_t last_block[PIPELINE_DEVICE_COUNT][34];
+static bool block_cache_valid[PIPELINE_DEVICE_COUNT];
+
 static PipelineState state;
+static uint16_t warmup_count;   // 全局已处理帧数 (两片设备共同推进, 对齐 Python 按包计数)
+static uint16_t calib_count;
 static uint8_t connected_device_mask;
 static uint8_t forced_device_mask;
 
@@ -85,16 +100,13 @@ static void update_touch_output(void)
 
     if (state == PIPELINE_STATE_READY)
     {
-        for (uint8_t channel = 0U;
-             channel < TENODATA_TOTAL_CHANNELS;
-             channel++)
+        for (uint8_t region = 0U;
+             region < TENODATA_MAI2TOUCH_REGION_COUNT;
+             region++)
         {
-            uint8_t owner_mask = device_bit(channel_device(channel));
-
-            if (((connected_device_mask & owner_mask) != 0U) &&
-                detectors[channel].is_pressed)
+            if (region_state[region])
             {
-                add_channel_region(&mapped_bits, channel);
+                mapped_bits |= 1ULL << region;
             }
         }
     }
@@ -103,6 +115,14 @@ static void update_touch_output(void)
     {
         *touch_bits = mapped_bits & TENODATA_MAI2TOUCH_VALID_MASK;
     }
+}
+
+static void reset_channel(uint8_t channel)
+{
+    /* 整结构清零同时实现历史队列预填充 16 个 0,
+     * 与 Python deque([0] * 16) 对齐: 首帧 deriv = val - 0。 */
+    memset(&channels[channel], 0, sizeof(channels[channel]));
+    detector_reset(&detectors[channel]);
 }
 
 static void reset_device_calibration(uint8_t device_index)
@@ -114,82 +134,41 @@ static void reset_device_calibration(uint8_t device_index)
 
     for (uint8_t channel = first_channel; channel < end_channel; channel++)
     {
-        calib_accum[channel] = 0;
-        calib_per_ch_count[channel] = 0U;
-        calib_ready[channel] = false;
-        setup_raw[channel] = 0;
-        detector_reset(&detectors[channel]);
+        uint8_t region = tenodata_config_get_mai2touch_region(channel);
+
+        if (region < TENODATA_MAI2TOUCH_REGION_COUNT)
+        {
+            region_state[region] = false;
+        }
+
+        reset_channel(channel);
     }
 
     memset(last_block[device_index], 0, sizeof(last_block[device_index]));
     block_cache_valid[device_index] = false;
-    calib_skip_count[device_index] = 0U;
 }
 
-static bool connected_channels_are_ready(void)
+static void restart_calibration(void)
 {
-    for (uint8_t channel = 0U;
-         channel < TENODATA_TOTAL_CHANNELS;
-         channel++)
-    {
-        uint8_t owner_mask = device_bit(channel_device(channel));
-
-        if (((connected_device_mask & owner_mask) != 0U) &&
-            !calib_ready[channel])
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-static void enter_ready_if_possible(void)
-{
-    if (!connected_channels_are_ready())
-    {
-        return;
-    }
-
-    if (state != PIPELINE_STATE_READY)
-    {
-        state = PIPELINE_STATE_READY;
-
-        /* A recovered device stops being forced only after all of its
-         * connected channels have a valid software baseline. Disconnected
-         * devices remain forced through get_forced_mapped_bits().
-         */
-        forced_device_mask &= (uint8_t)~connected_device_mask;
-    }
-
-    update_touch_output();
-}
-
-static void reset_detection_state(void)
-{
-    memset(last_block, 0, sizeof(last_block));
-    memset(block_cache_valid, 0, sizeof(block_cache_valid));
-
-    for (uint8_t channel = 0U; channel < TENODATA_TOTAL_CHANNELS; channel++)
-    {
-        detector_reset(&detectors[channel]);
-    }
-
-    update_touch_output();
+    state = PIPELINE_STATE_WARMUP;
+    warmup_count = 0U;
+    calib_count = 0U;
 }
 
 // ================= 公开 API =================
 
 void touch_pipeline_init(void)
 {
-    state = PIPELINE_STATE_CALIB_SKIP;
-    memset(calib_skip_count, 0, sizeof(calib_skip_count));
-    memset(calib_per_ch_count, 0, sizeof(calib_per_ch_count));
-    memset(calib_ready, 0, sizeof(calib_ready));
-    memset(calib_accum, 0, sizeof(calib_accum));
-    memset(setup_raw, 0, sizeof(setup_raw));
-    reset_detection_state();
-    enter_ready_if_possible();
+    for (uint8_t channel = 0U; channel < TENODATA_TOTAL_CHANNELS; channel++)
+    {
+        reset_channel(channel);
+    }
+
+    memset(region_state, 0, sizeof(region_state));
+    memset(last_block, 0, sizeof(last_block));
+    memset(block_cache_valid, 0, sizeof(block_cache_valid));
+    restart_calibration();
+    update_touch_output();
 }
 
 void touch_pipeline_set_device_masks(uint8_t connected_mask,
@@ -223,21 +202,17 @@ void touch_pipeline_set_device_masks(uint8_t connected_mask,
 
     if (newly_connected_mask != 0U)
     {
-        state = PIPELINE_STATE_CALIB_SKIP;
+        /* 新设备接入: 整条管线回到预热并重新收集基线
+         * (对齐 Python 重新打开串口时的 reset)。 */
+        restart_calibration();
     }
 
-    enter_ready_if_possible();
     update_touch_output();
 }
 
 bool touch_pipeline_is_ready(void)
 {
     return state == PIPELINE_STATE_READY;
-}
-
-void touch_pipeline_reset_detection_state(void)
-{
-    reset_detection_state();
 }
 
 void touch_pipeline_feed(int psoc_index, const uint8_t *raw_35)
@@ -257,16 +232,16 @@ void touch_pipeline_feed(int psoc_index, const uint8_t *raw_35)
         return;
     }
 
-    int base_ch = psoc_index * 17;
+    int base_ch = psoc_index * TENODATA_CHANNELS_PER_DEVICE;
 
-    // ---- 阶段1: 提取数值并记录每个通道是否变化 ----
-    uint16_t channel_vals[TENODATA_CHANNELS_PER_DEVICE];
+    // ---- 阶段1: 提取数值并逐通道标记变化 ----
+    uint16_t raw_vals[TENODATA_CHANNELS_PER_DEVICE];
     bool channel_changed[TENODATA_CHANNELS_PER_DEVICE];
-    bool any_channel_changed = !block_cache_valid[psoc_index];
+    bool any_changed = !block_cache_valid[psoc_index];
 
-    for (int i = 0; i < TENODATA_CHANNELS_PER_DEVICE; i++) {
+    for (int i = 0; i < (int)TENODATA_CHANNELS_PER_DEVICE; i++) {
         int byte_offset = 1 + i * 2;
-        channel_vals[i] = raw_35[byte_offset] |
+        raw_vals[i] = raw_35[byte_offset] |
             ((uint16_t)raw_35[byte_offset + 1] << 8);
         channel_changed[i] =
             !block_cache_valid[psoc_index] ||
@@ -274,65 +249,131 @@ void touch_pipeline_feed(int psoc_index, const uint8_t *raw_35)
             (last_block[psoc_index][i * 2 + 1] != raw_35[byte_offset + 1]);
 
         if (channel_changed[i]) {
-            any_channel_changed = true;
+            any_changed = true;
         }
     }
 
-    if ((state == PIPELINE_STATE_READY) && !any_channel_changed) {
+    /* 完全重复的帧整体丢弃 (对齐 Python: 该侧 payload 无变化则跳过,
+     * 不推进预热/校准计数)。 */
+    if (!any_changed) {
         return;
     }
 
     memcpy(last_block[psoc_index], &raw_35[1], sizeof(last_block[psoc_index]));
     block_cache_valid[psoc_index] = true;
 
-    // ---- 阶段3: 校准 或 判定 ----
-    switch (state) {
-        case PIPELINE_STATE_CALIB_SKIP:
-        case PIPELINE_STATE_CALIB_COLLECT:
-            /* Each PSoC gets its own stabilization window. With a shared
-             * counter, two alternating devices only skipped about five frames
-             * each and a late device could skip none at all.
-             */
-            if (calib_skip_count[psoc_index] < CALIB_SKIP_FRAMES)
-            {
-                calib_skip_count[psoc_index]++;
-                break;
-            }
-
-            state = PIPELINE_STATE_CALIB_COLLECT;
-            // 每通道独立累积, 避免另一片 PSoC 未到达时提前退出校准
-            for (int i = 0; i < 17; i++) {
-                int ch = base_ch + i;
-                if (calib_per_ch_count[ch] < CALIB_COLLECT_FRAMES) {
-                    calib_accum[ch] += channel_vals[i];
-                    calib_per_ch_count[ch]++;
-                    if (calib_per_ch_count[ch] >= CALIB_COLLECT_FRAMES) {
-                        setup_raw[ch] = calib_accum[ch] / CALIB_COLLECT_FRAMES;
-                        calib_ready[ch] = true;
-                    }
-                }
-            }
-            // 只等待当前已连接 PSoC 所属的通道完成软件基线。
-            enter_ready_if_possible();
-            break;
-
-        case PIPELINE_STATE_READY: {
-            for (int i = 0; i < TENODATA_CHANNELS_PER_DEVICE; i++) {
-                int phys_ch = base_ch + i;
-                if (!calib_ready[phys_ch]) continue; // 该通道尚未校准完毕
-                if (!channel_changed[i]) continue;   // 只更新实际变化的通道
-
-                (void)detector_process_frame(&detectors[phys_ch],
-                                             (uint8_t)phys_ch,
-                                             channel_vals[i],
-                                             setup_raw[phys_ch]);
-            }
-
-            /* update_touch_output() merges pressed, shared-region,
-             * disconnected and explicitly forced mappings with OR.
-             */
-            update_touch_output();
-            break;
+    // ---- 阶段2: IIR 滤波 (仅更新实际变化的通道, 前置于预热) ----
+    for (int i = 0; i < (int)TENODATA_CHANNELS_PER_DEVICE; i++) {
+        int ch = base_ch + i;
+        if (!channel_changed[i]) {
+            continue;
         }
+
+        float raw = (float)raw_vals[i];
+        if (channels[ch].iir == 0.0f) {
+            channels[ch].iir = raw;
+        } else {
+            channels[ch].iir =
+                (channels[ch].iir * (PIPELINE_IIR_FACTOR - 1.0f) + raw) /
+                PIPELINE_IIR_FACTOR;
+        }
+        channels[ch].latest_val = (int)channels[ch].iir;
     }
+
+    // ---- 阶段3: 冷启动预热 ----
+    if (state == PIPELINE_STATE_WARMUP) {
+        warmup_count++;
+        if (warmup_count <= PIPELINE_WARMUP_FRAMES) {
+            return;
+        }
+        state = PIPELINE_STATE_CALIB;
+        calib_count = 0U;
+        /* 本帧继续落入校准收集 (对齐 Python: 预热结束的同一帧开始收集) */
+    }
+
+    // ---- 阶段4: setup_raw 基线校准 ----
+    if (state == PIPELINE_STATE_CALIB) {
+        /* 仅收集实际发生数值更新的通道, 避免大量冗余定格拉偏均值
+         * (run3 的重大修复); 已校准通道 (热插拔恢复场景) 不再收集。 */
+        for (int i = 0; i < (int)TENODATA_CHANNELS_PER_DEVICE; i++) {
+            int ch = base_ch + i;
+            if (!channel_changed[i]) {
+                continue;
+            }
+            if (channels[ch].calib_ready) {
+                continue;
+            }
+
+            channels[ch].setup_sum += (float)channels[ch].latest_val;
+            channels[ch].setup_count++;
+        }
+
+        calib_count++;
+        if (calib_count >= PIPELINE_CALIB_FRAMES) {
+            for (int ch = 0; ch < (int)TENODATA_TOTAL_CHANNELS; ch++) {
+                if (channels[ch].setup_count > 0U) {
+                    channels[ch].setup_raw =
+                        channels[ch].setup_sum /
+                        (float)channels[ch].setup_count;
+                } else {
+                    /* 校准期内从未变化的通道回退到当前值 */
+                    channels[ch].setup_raw =
+                        (float)channels[ch].latest_val;
+                }
+                channels[ch].calib_ready = true;
+            }
+            state = PIPELINE_STATE_READY;
+        }
+        return;
+    }
+
+    // ---- 阶段5: 正常检测 ----
+    for (int i = 0; i < (int)TENODATA_CHANNELS_PER_DEVICE; i++) {
+        int ch = base_ch + i;
+        if (!channel_changed[i]) {
+            continue;  // 未更新的通道保留上一帧判定结果
+        }
+        if (!channels[ch].calib_ready) {
+            continue;
+        }
+
+        float val = (float)channels[ch].latest_val;
+
+        /* 一阶/二阶导数。历史队列预填充 16 个 0 (与 Python deque 一致),
+         * 因此首帧 deriv = val - 0, last_deriv = 0 - 0。 */
+        float last_deriv = (float)channels[ch].history[0] -
+                           (float)channels[ch].history[1];
+        float deriv = val - (float)channels[ch].history[0];
+        float deriv2 = deriv - last_deriv;
+
+        float diff = val - channels[ch].setup_raw;
+
+        bool pressed = detector_process_frame(&detectors[ch],
+                                              (uint8_t)ch,
+                                              val,
+                                              diff,
+                                              channels[ch].setup_raw,
+                                              deriv,
+                                              deriv2);
+
+        /* 对齐 run3 GameCommunicator.update_channel_state:
+         * raw 为 0 视为传感器失效强制按下; 区域由最后更新的通道覆写。 */
+        uint8_t region = tenodata_config_get_mai2touch_region((uint8_t)ch);
+
+        if (region < TENODATA_MAI2TOUCH_REGION_COUNT)
+        {
+            region_state[region] = (channels[ch].latest_val == 0) ||
+                                   pressed;
+        }
+
+        /* 历史更新: 严格禁止将未更新的重复数据塞入历史队列,
+         * 防止导数归零 (run3 关键修复)。 */
+        for (int h = (int)PIPELINE_HISTORY_SIZE - 1; h > 0; h--) {
+            channels[ch].history[h] = channels[ch].history[h - 1];
+        }
+        channels[ch].history[0] = (int)val;
+    }
+
+    /* update_touch_output() 合并按下区域与断线强制区域。 */
+    update_touch_output();
 }

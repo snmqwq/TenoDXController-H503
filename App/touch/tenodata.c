@@ -28,6 +28,11 @@
 #define TENODATA_ALL_DEVICE_MASK \
     ((uint8_t)((1U << PSOC_COMM_DEVICE_COUNT) - 1U))
 
+/* run3 上位机扫描参数帧: 0xAA 0x01 + 136 字节 payload + 1 字节校验和
+ * (校验和 = 帧头与 payload 全部字节累加的低 8 位)。 */
+#define TENODATA_HOST_CFG_HEADER_A         0xAAU
+#define TENODATA_HOST_CFG_HEADER_B         0x01U
+
 #if defined(DEBUG) && defined(__GNUC__)
 #define TENODATA_SIZE_OPTIMIZED __attribute__((optimize("Os")))
 #else
@@ -43,12 +48,30 @@ typedef enum
     STATE_WRITE_CONFIG_TO_PSOC,
     STATE_WAIT_CALIBRATION,
     STATE_RUNNING,
-    STATE_REINIT_DRAIN
+    STATE_REINIT_DRAIN,
+    /* 追加在末尾, 保持既有状态编号不变 (状态编号对 Magic 工具可见) */
+    STATE_WAIT_HOST_CONFIG
 } tenodata_state_t;
 
 static tenodata_state_t state;
 static uint8_t cdc_tx_frame[TENODATA_CDC_FRAME_LENGTH];
 static uint8_t host_config_payload[TENODATA_CONFIG_PAYLOAD_LENGTH];
+
+/* 上位机下发的扫描参数 (覆盖本地固定表, 重新初始化后仍生效) */
+static uint8_t host_config_override[TENODATA_CONFIG_PAYLOAD_LENGTH];
+static bool host_config_override_valid;
+
+typedef enum
+{
+    HOST_CFG_WAIT_AA = 0,
+    HOST_CFG_WAIT_01,
+    HOST_CFG_WAIT_PAYLOAD
+} host_cfg_rx_state_t;
+
+static host_cfg_rx_state_t host_cfg_rx_state;
+static uint8_t host_cfg_rx_buffer[TENODATA_CONFIG_PAYLOAD_LENGTH];
+static uint16_t host_cfg_rx_count;
+static uint8_t host_cfg_rx_checksum;
 static uint8_t active_device;
 static uint8_t pending_read_device;
 static uint8_t init_target_mask;
@@ -253,7 +276,17 @@ static void start_initialization(uint32_t now)
     psoc_comm_init();
     touch_pipeline_init();
     apply_pipeline_device_masks();
-    tenodata_config_get_payload(host_config_payload);
+    if (host_config_override_valid)
+    {
+        /* 上位机下发的扫描参数优先于本地固定表 */
+        memcpy(host_config_payload,
+               host_config_override,
+               sizeof(host_config_payload));
+    }
+    else
+    {
+        tenodata_config_get_payload(host_config_payload);
+    }
 
     operational_device_mask = 0U;
     init_target_mask = 0U;
@@ -411,6 +444,12 @@ static void finish_reboot_verification(uint8_t ready_mask, uint32_t now)
     {
         begin_running(0U, now);
     }
+    else if (!cdc_manager_is_mai2touch_active() &&
+             !host_config_override_valid)
+    {
+        /* tenodata 模式: 等待上位机下发扫描参数后再写 PSoC, 无超时 */
+        state = STATE_WAIT_HOST_CONFIG;
+    }
     else
     {
         state = STATE_WRITE_CONFIG_TO_PSOC;
@@ -551,6 +590,73 @@ static bool probe_for_reconnected_devices(uint32_t now)
     return true;
 }
 
+static void consume_host_config_frame(void)
+{
+    while (cdc_manager_rx_available() > 0U)
+    {
+        uint8_t byte;
+
+        (void)cdc_manager_rx_read(&byte, 1U);
+
+        switch (host_cfg_rx_state)
+        {
+        case HOST_CFG_WAIT_AA:
+            if (byte == TENODATA_HOST_CFG_HEADER_A)
+            {
+                host_cfg_rx_state = HOST_CFG_WAIT_01;
+            }
+            break;
+
+        case HOST_CFG_WAIT_01:
+            if (byte == TENODATA_HOST_CFG_HEADER_B)
+            {
+                host_cfg_rx_state = HOST_CFG_WAIT_PAYLOAD;
+                host_cfg_rx_count = 0U;
+                host_cfg_rx_checksum =
+                    (uint8_t)(TENODATA_HOST_CFG_HEADER_A +
+                              TENODATA_HOST_CFG_HEADER_B);
+            }
+            else
+            {
+                host_cfg_rx_state = HOST_CFG_WAIT_AA;
+            }
+            break;
+
+        case HOST_CFG_WAIT_PAYLOAD:
+            if (host_cfg_rx_count < TENODATA_CONFIG_PAYLOAD_LENGTH)
+            {
+                host_cfg_rx_checksum =
+                    (uint8_t)(host_cfg_rx_checksum + byte);
+                host_cfg_rx_buffer[host_cfg_rx_count] = byte;
+                host_cfg_rx_count++;
+            }
+            else
+            {
+                /* 最后一个字节是校验和 */
+                host_cfg_rx_state = HOST_CFG_WAIT_AA;
+
+                if (byte == host_cfg_rx_checksum)
+                {
+                    /* 上位机按 1 秒节流重复下发相同配置,
+                     * 去重避免无限重新初始化。 */
+                    if (!host_config_override_valid ||
+                        (memcmp(host_config_override,
+                                host_cfg_rx_buffer,
+                                TENODATA_CONFIG_PAYLOAD_LENGTH) != 0))
+                    {
+                        memcpy(host_config_override,
+                               host_cfg_rx_buffer,
+                               TENODATA_CONFIG_PAYLOAD_LENGTH);
+                        host_config_override_valid = true;
+                        tenodata_request_reconfigure();
+                    }
+                }
+            }
+            break;
+        }
+    }
+}
+
 void tenodata_init(void)
 {
     uint32_t now = HAL_GetTick();
@@ -589,6 +695,12 @@ TENODATA_SIZE_OPTIMIZED
 void tenodata_task(void)
 {
     uint32_t now = HAL_GetTick();
+
+    /* mai2touch 模式独占 CDC RX, 只有 tenodata 模式消费扫描参数帧 */
+    if (!cdc_manager_is_mai2touch_active())
+    {
+        consume_host_config_frame();
+    }
 
     if (reinit_requested && (state != STATE_REINIT_DRAIN))
     {
@@ -1155,6 +1267,17 @@ void tenodata_task(void)
             break;
         }
 
+        case STATE_WAIT_HOST_CONFIG:
+            /* 无超时等待上位机下发扫描参数; HID/aime/按键等任务
+             * 在主循环中并行运行不受影响。若期间切换为 mai2touch
+             * 模式, 则改用本地默认参数继续初始化。 */
+            if (host_config_override_valid ||
+                cdc_manager_is_mai2touch_active())
+            {
+                state = STATE_WRITE_CONFIG_TO_PSOC;
+            }
+            break;
+
         default:
             request_initialization();
             break;
@@ -1172,6 +1295,11 @@ void tenodata_task(void)
 
             case STATE_WAIT_CALIBRATION:
                 cdc_send_frame(calibration_report_status);
+                break;
+
+            case STATE_WAIT_HOST_CONFIG:
+                /* 报 0x01 提示上位机下发扫描参数帧 */
+                cdc_send_frame(PSOC_STATUS_START_CALIBRATION);
                 break;
 
             case STATE_INIT_WAIT:

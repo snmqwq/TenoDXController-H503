@@ -7,39 +7,18 @@
 typedef struct {
     bool is_pressed;
 
-    /* A-zone per-channel state */
-    int frames_seen;
-    float a_baseline;
-    bool a_baseline_initialized;
-    float a_setup_baseline;
-    float a_peak;
-    bool a_after_release;
-    float a_valley_raw;
-    bool a_valley_valid;
-    bool a_quick_repress_armed;
-    int a_frames_after_release;
-    int a_settled_after_release_frames;
-    bool a_fast_pending;
-    float a_pending_start_signal;
-    float a_pending_peak;
-    char a_pending_kind;         /* 'f'=fast, 'e'=edge, 'i'=impulse, 's'=side_edge, 'm'=side_micro */
-    int a_pending_frames;
-    float a_pending_max_deriv;
-    float a_pending_last_deriv;
-    int a_soft_edge_frames;
-    float a_side_edge_rise_start;
-    bool a_side_edge_rise_start_valid;
-    float a_side_edge_peak;
-    int a_side_edge_stable_frames;
-
-    /* Sixteen-frame raw-value history */
-    int history[16];
-    int history_idx;
-    int history_count;
+    /* A-zone state (对齐 run3 detector.py _AChannelState) */
+    bool baseline_valid;
+    float baseline;              /* 追踪基线 (Raw 坐标系) */
+    uint8_t fsm_state;           /* 0:未触发 1:预判定 2:触发 3:极速重击延迟一帧 */
+    float pre_judge_deriv;       /* 预判定记录的导数, 用于寻找拐点 */
+    float touched_effective_diff;/* 触发瞬间的有效位移, 用于释放判定 */
+    float prev_deriv2;           /* 上一帧二阶导数, 用于计算三阶导数 */
 } ButtonDetector;
 
 void detector_reset(ButtonDetector *d);
 bool detector_process_frame(ButtonDetector *d, uint8_t phys_ch,
-                            int current_val, int setup_raw);
+                            float val, float diff, float setup_raw,
+                            float deriv, float deriv2);
 
 #endif /* __BUTTON_DETECTOR_H__ */
