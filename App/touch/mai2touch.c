@@ -1,7 +1,6 @@
 #include "mai2touch.h"
 #include "cdc_manager.h"
 #include "main.h"
-#include "touch_pipeline.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -47,14 +46,6 @@ uint64_t* mai2touch_get_touch_bits(void) {
 
 // ================= 命令处理 =================
 
-static void mai2touch_cmd_rset(void) {
-    /* Clear detector history while immediately restoring any regions forced
-     * by a missing PSoC. RSET must not leave those safety bits at zero.
-     */
-    touch_pipeline_reset_detection_state();
-    sending = false;
-}
-
 static void mai2touch_cmd_halt(void) {
     sending = false;
 }
@@ -78,7 +69,9 @@ static void mai2touch_dispatch_command(void) {
 
     // 命令标识在 payload 第 3 字节 (packet[2])
     switch (rx_packet[2]) {
-        case MAI2TOUCH_CMD_RSET:  mai2touch_cmd_rset();  break;
+        case MAI2TOUCH_CMD_RSET:
+            /* no-op: 对齐 run3 GameCommunicator, RSET 不改变任何状态 */
+            break;
         case MAI2TOUCH_CMD_HALT:  mai2touch_cmd_halt();  break;
         case MAI2TOUCH_CMD_STAT:  mai2touch_cmd_stat();  break;
         case MAI2TOUCH_CMD_RATIO: mai2touch_cmd_echo(rx_packet); break;
