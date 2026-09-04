@@ -26,12 +26,17 @@ extern "C" {
 
 #define CFG_TUD_ENDPOINT0_SIZE      64
 
-// 3 个 CDC，1 个 HID
-#define CFG_TUD_CDC                 3
+// 4 个无 Notification 端点的 CDC，1 个 HID
+#define CFG_TUD_CDC                 4
 #define CFG_TUD_HID                 1
 #define CFG_TUD_MSC                 0
 #define CFG_TUD_MIDI                0
 #define CFG_TUD_VENDOR              0
+
+// EP0 + CDC0..3 Bulk + HID，共使用端点编号 0..5 和接口编号 0..8
+#define CFG_TUD_CDC_NOTIFY          0
+#define CFG_TUD_ENDPPOINT_MAX       6
+#define CFG_TUD_INTERFACE_MAX       9
 
 // CDC buffer
 #define CFG_TUD_CDC_RX_BUFSIZE      256
