@@ -1,4 +1,5 @@
 #include "tusb.h"
+#include "kb/keyboard_app.h"
 #include <stdio.h>
 //--------------------------------------------------------------------
 // Device Descriptor
@@ -216,7 +217,7 @@ uint8_t const desc_configuration[] =
     sizeof(desc_hid_report),
     EPNUM_HID_IN,
     CFG_TUD_HID_EP_BUFSIZE,
-    10
+    KEYBOARD_APP_HID_REPORT_INTERVAL_MS
   )
 };
 

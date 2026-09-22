@@ -13,6 +13,9 @@ extern "C" {
 #define KEYBOARD_APP_CONFIG_KEY_FIRST   8U
 #define KEYBOARD_APP_CONFIG_KEY_COUNT   4U
 
+// Shared by the keyboard task and the full-speed USB HID endpoint descriptor.
+#define KEYBOARD_APP_HID_REPORT_INTERVAL_MS  2U
+
 typedef enum
 {
     KEYBOARD_APP_MAIN_LAYOUT_1P = 0U,

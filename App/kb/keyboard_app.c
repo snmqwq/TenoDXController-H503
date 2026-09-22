@@ -6,8 +6,6 @@
 #include "stm32h5xx_hal.h"
 #include "tusb.h"
 
-#define KEYBOARD_APP_HID_REPORT_INTERVAL_MS  2U
-
 typedef struct __attribute__((packed))
 {
     uint8_t modifier;
