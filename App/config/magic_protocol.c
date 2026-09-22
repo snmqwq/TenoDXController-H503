@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "config/magic_config.h"
+#include "magic_config.h"
 #include "main.h"
 
 #define MAGIC_SEQUENCE_LENGTH         8U
@@ -34,7 +34,7 @@ typedef struct
 typedef struct
 {
     magic_rx_parser_t rx;
-    aime_host_tx_sink_t tx_sink;
+    magic_protocol_tx_sink_t tx_sink;
 } magic_protocol_state_t;
 
 static magic_protocol_state_t protocol;
@@ -65,7 +65,7 @@ static void magic_queue_response(uint8_t status,
                                  const uint8_t *payload,
                                  uint8_t payload_length);
 
-void magic_protocol_init(aime_host_tx_sink_t const *tx_sink)
+void magic_protocol_init(magic_protocol_tx_sink_t const *tx_sink)
 {
     memset(&protocol, 0, sizeof(protocol));
 
@@ -152,11 +152,6 @@ bool magic_protocol_probe(uint8_t data)
     protocol.rx.sum = 0U;
     protocol.rx.last_byte_tick = HAL_GetTick();
     return true;
-}
-
-void magic_protocol_cancel_probe(void)
-{
-    protocol.rx.sequence_index = 0U;
 }
 
 void magic_protocol_feed(uint8_t data)

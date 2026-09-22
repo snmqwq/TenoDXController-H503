@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interactive magic-config console using the TenoDX Aime CDC port."""
+"""Interactive magic-config console using the TenoDX Debug CDC port."""
 
 from __future__ import annotations
 
@@ -1370,12 +1370,12 @@ def connect_to_port(port: str, baudrate: int, timeout: float) -> MagicConfigClie
         client.close()
         raise
 
-    print(f"已连接并验证为 TenoDX Aime/Magic 配置端口: {port}")
+    print(f"已连接并验证为 TenoDX Debug/Magic 配置端口: {port}")
     return client
 
 
 def verify_magic_port(client: MagicConfigClient) -> None:
-    """Verify that an open serial port is the firmware's CDC2 Aime/Magic endpoint."""
+    """Verify that an open serial port is the firmware's CDC3 Debug/Magic endpoint."""
     response = client.request(MODULES["light"], COMMANDS["info"])
 
     if not response.ok:
@@ -1392,7 +1392,7 @@ def verify_magic_port(client: MagicConfigClient) -> None:
 
 
 class ConnectionMonitor:
-    """Periodically verify that an open CDC2 Aime/Magic port is still alive."""
+    """Periodically verify that an open CDC3 Debug/Magic port is still alive."""
 
     def __init__(self, client: MagicConfigClient, interval_seconds: float) -> None:
         self.client = client
@@ -1568,7 +1568,7 @@ def connection_loop(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="TenoDX magic-config console for the Aime CDC port."
+        description="TenoDX magic-config console for the Debug CDC port."
     )
     parser.add_argument("-p", "--port", help="默认串口，例如 COM7；启动时仍会列出串口")
     parser.add_argument("--baudrate", type=int, default=115200, help="CDC 波特率占位，默认 115200")

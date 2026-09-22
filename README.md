@@ -20,7 +20,7 @@
 | 功能 | 外设与引脚 | 用途 |
 | --- | --- | --- |
 | MCU | STM32H503CBT6 | 主控制器 |
-| USB | TinyUSB Device | 3 CDC + 1 HID keyboard |
+| USB | TinyUSB Device | 4 CDC + 1 HID keyboard |
 | I2C1 | PB7 SDA / PB8 SCL | PSoC 触摸从机 `0x08`、`0x09` |
 | USART2 | PB4 TX / PB5 RX，115200 8N1 | PN532 |
 | USART1 | PA9 TX / PA10 RX，115200 8N1 | 调试串口，默认无输出 |
@@ -34,7 +34,8 @@ USB 标识为 VID `0xCAFE`、PID `0x4313`，产品名为 `TenoDX Controller`。
 | --- | --- | --- |
 | CDC0 | TenoDX Touch Port | 双 PSoC 触摸数据 |
 | CDC1 | TenoDX LED Port | Mai2LED 灯光协议 |
-| CDC2 | TenoDX Aime Port | Aime 主机协议与 Magic 配置协议 |
+| CDC2 | TenoDX Aime Port | Aime 主机协议 |
+| CDC3 | TenoDX Debug Port | Magic 配置协议 |
 | HID0 | Keyboard | 12KRO 键盘报告 |
 
 ## 按键与键盘
@@ -109,14 +110,14 @@ CDC0 帧固定为 70 字节：
 - PN532 使用 USART2 通信。
 - 支持 FeliCa IDm 读取。
 - 支持 MIFARE 验证及 Block 2 读取。
-- Aime 主机协议与 Magic 配置协议共用 CDC2，并由接收分流和发送队列避免响应交错。
+- Aime 主机协议独占 CDC2，不再接收或响应 Magic 配置命令。
 - USART1 调试由 `PN532_UART_DEBUG_ENABLED` 控制，默认关闭。
 
 相关参考资料保存在 `ref/Aime/`。
 
 ## Magic 配置
 
-Magic 协议通过 CDC2 通信，固定前导序列为：
+Magic 协议通过独立的 CDC3 `TenoDX Debug Port` 通信。该端口只承载 Magic 二进制协议，不输出文本日志。固定前导序列为：
 
 ```text
 91 3E ED 20 7C 99 58 AC
@@ -168,7 +169,7 @@ python -m pip install -r tools/requirements.txt
 python tools/magic_config_tool.py
 ```
 
-连接时选择 `TenoDX Aime Port`。工具支持触摸映射与输出模式、灯光配置、1P/2P 布局、副按键键值、原始 Magic 请求和系统 DFU。
+连接时选择 `TenoDX Debug Port`。工具支持触摸映射与输出模式、灯光配置、1P/2P 布局、副按键键值、原始 Magic 请求和系统 DFU。
 
 常用触摸命令：
 
@@ -240,8 +241,8 @@ cmake --build build/firmware --parallel
 | 路径 | 内容 |
 | --- | --- |
 | `App/` | 应用模块及统一的 `app_init()` / `app_task()` 入口 |
-| `App/aime/` | PN532、Aime 协议及 CDC2 分流 |
-| `App/config/` | Magic 命令及触摸、灯光、键盘配置 |
+| `App/aime/` | PN532、Aime 协议及专用 CDC2 接口 |
+| `App/config/` | Magic 命令、专用 CDC3 Debug 接口及触摸、灯光、键盘配置 |
 | `App/touch/` | PSoC 通信、触摸判定、Mai2Touch、CDC0 路由及统一任务入口 |
 | `App/led/` | Mai2LED 控制 |
 | `App/button/` | 按键扫描与 MultiButton 封装 |
