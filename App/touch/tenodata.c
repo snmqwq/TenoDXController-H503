@@ -26,6 +26,10 @@
  * 中间进度; 0x02 是持久状态, 且这几段数据是 PSoC 初始化时写一次、之后不再
  * 改动, 所以在 0x02 读到的就是校准结果。 */
 #define TENODATA_CAL_CAPTURE_RETRY_MS     500U
+/* 首轮抓到后再等一小段做一次"确认读"。
+ * 实测: 刚看到 0x02 就立刻读, 有时会读到 PSoC 尚未写完的区域
+ * (片0 前 7 个通道为 0), 稍后读则完全稳定; 因此 DONE 后再补读一次。 */
+#define TENODATA_CAL_CONFIRM_DELAY_MS     250U
 /* 2ms 轮询: 两片交替 → 每片 ~250Hz (单次 35B 读约 0.9ms, 总线占用 ~45%) */
 #define TENODATA_I2C_POLL_PERIOD_MS         2U
 #define TENODATA_I2C_TRANSACTION_TIMEOUT_MS 30U
@@ -104,6 +108,8 @@ static uint8_t comp_idac[PSOC_COMM_DEVICE_COUNT][PSOC_COMM_COMP_IDAC_LENGTH];
 static bool comp_idac_valid[PSOC_COMM_DEVICE_COUNT];
 /* 校准量补抓的时间戳 (每个设备独立) */
 static uint32_t last_cal_capture_tick[PSOC_COMM_DEVICE_COUNT];
+/* 首轮抓取成功后, 是否还需要做一次确认读 */
+static bool cal_capture_confirm_pending[PSOC_COMM_DEVICE_COUNT];
 static uint8_t discovery_candidate_mask;
 static uint8_t locked_discovery_mask;
 static uint8_t read_failure_count[PSOC_COMM_DEVICE_COUNT];
@@ -225,6 +231,40 @@ static void capture_cal_if_ready(uint8_t device_index, uint8_t psoc_status)
         if (need_comp)
         {
             comp_idac_valid[device_index] = true;
+        }
+
+        /* 刚看到校准完成时读到的可能是"写了一半"的区域, 稍后再确认读一次
+         * (时间戳保持不动, 由 confirm_cal_capture 负责延迟后重读) */
+        cal_capture_confirm_pending[device_index] = true;
+    }
+}
+
+/* 首轮抓取后延迟确认读: 用总线空闲窗口把快照刷新成稳定值。 */
+static void confirm_cal_capture(uint32_t now)
+{
+    for (uint8_t index = 0U; index < PSOC_COMM_DEVICE_COUNT; index++)
+    {
+        uint8_t mask = device_bit(index);
+
+        if (!cal_capture_confirm_pending[index] ||
+            ((operational_device_mask & mask) == 0U))
+        {
+            continue;
+        }
+
+        if (!elapsed_at_least(now,
+                              last_cal_capture_tick[index],
+                              TENODATA_CAL_CONFIRM_DELAY_MS))
+        {
+            continue;
+        }
+
+        if (psoc_comm_read_cal(index,
+                               cp_raw[index],
+                               comp_idac[index]))
+        {
+            cal_capture_confirm_pending[index] = false;
+            last_cal_capture_tick[index] = now;
         }
     }
 }
@@ -405,6 +445,7 @@ static void start_initialization(uint32_t now)
     memset(cp_valid, 0, sizeof(cp_valid));
     memset(comp_idac_valid, 0, sizeof(comp_idac_valid));
     memset(last_cal_capture_tick, 0, sizeof(last_cal_capture_tick));
+    memset(cal_capture_confirm_pending, 0, sizeof(cal_capture_confirm_pending));
     active_device = 0U;
     pending_read_device = 0U;
     read_inflight = false;
@@ -1286,10 +1327,11 @@ void tenodata_task(void)
             bool reprobe_attempted = false;
             bool bus_recovered = false;
 
-            /* 校准量 (Cp / 补偿 IDAC) 若还没抓到, 定期补抓 */
+            /* 校准量 (Cp / 补偿 IDAC): 先补抓未拿到的, 再做延迟确认读 */
             if (!read_inflight && psoc_comm_is_bus_ready())
             {
                 retry_cal_capture(now);
+                confirm_cal_capture(now);
             }
 
             if (touch_pipeline_is_ready())

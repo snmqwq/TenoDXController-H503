@@ -165,6 +165,28 @@
   一旦 PSoC 写出非零补偿值即会显示；若确认应当非零，需另查 PSoC 侧的
   `Tune_CapSense_CompIDAC_SAR()`（属 `PSoC Creator/` 内容，本次未改动）。
 
+### 节点 12: 校准量"确认读" —— 消除刚校准完读到的半写状态
+- **日期**: 2026-09-25
+- **背景**: 用户反馈"要重新插拔才有新的 Cp/补偿 IDAC"。实测复核（用 Magic `0x05`
+  触发重配各 3 轮，只走 Debug Port 不占 Touch Port）：
+  - **Cp 每次重配都会刷新**（`0xAD` 软复位有效），不需要插拔：
+    实测片0 通道1 在 `193 → 0` 之间变化、通道7 `5 → 28`、通道8 `5 → 10`；
+    用户看到的"必须插拔"是**旧固件**的行为（节点 11 之前 RUNNING 后不再抓取）。
+  - 但第 1 轮出现**片0 前 7 个通道为 0**，之后各轮完全稳定 —— 说明"刚看到 `0x02`
+    就立刻读"有时会读到 PSoC **尚未写完**的区域。
+- **变更** (`App/touch/tenodata.c`):
+  - 新增 `cal_capture_confirm_pending[]` 与 `confirm_cal_capture()`：
+    首轮抓到成功后**延迟 `TENODATA_CAL_CONFIRM_DELAY_MS`(250ms) 再读一次**，
+    用稳定值覆盖首轮快照（仅在总线空闲且无在途读时执行）。
+  - `start_initialization()` 一并清 `cal_capture_confirm_pending`。
+- **影响**: 上位机读到的 Cp/补偿 IDAC 不再出现"前几个通道为 0"的瞬态。
+- **验证**: Release 构建通过（text 66880 / data 188 / bss 15776）；
+  重配后连续读取稳定（3 轮中第 2、3 轮逐字节一致）。
+- **遗留待查**: 补偿 IDAC 实测恒为 0（两片 × 17 通道），而 Cp 有值（3~6）。
+  主机侧读取路径已用 Cp 验证正确，故倾向 PSoC 侧
+  `CapSense_1_GetCompensationIDAC()` 在 SAR 标定后确实算出 0；
+  需要 PSoC 侧打印 raw / Ccomp / target 才能判定（属 `PSoC Creator/`，本次未改动）。
+
 ---
 
 ## 当前文件结构
