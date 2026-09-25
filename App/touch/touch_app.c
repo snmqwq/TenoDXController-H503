@@ -123,6 +123,11 @@ bool touch_app_get_comp_idac(uint8_t device_index, uint8_t *comp_out)
     return tenodata_get_comp_idac(device_index, comp_out);
 }
 
+bool touch_app_get_cal_age_ms(uint8_t device_index, uint16_t *age_ms)
+{
+    return tenodata_get_cal_age_ms(device_index, age_ms);
+}
+
 bool touch_app_get_psoc_status(TenodataStatusSnapshot *snapshot)
 {
     return tenodata_get_status(snapshot);

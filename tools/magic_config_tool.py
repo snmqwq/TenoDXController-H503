@@ -1353,7 +1353,11 @@ def cmd_touch(client: MagicConfigClient, argv: list[str]) -> None:
 
         payload = response.payload
 
-        expected = 2 * (TOUCH_CHANNELS_PER_DEVICE * 2 + TOUCH_CHANNELS_PER_DEVICE)
+        cp_bytes = TOUCH_CHANNELS_PER_DEVICE * 2
+        comp_bytes = TOUCH_CHANNELS_PER_DEVICE
+        age_bytes = 2
+        stride = cp_bytes + comp_bytes + age_bytes
+        expected = 2 * stride
 
         if len(payload) != expected:
             command_error(
@@ -1362,8 +1366,6 @@ def cmd_touch(client: MagicConfigClient, argv: list[str]) -> None:
             )
             return
 
-        stride = TOUCH_CHANNELS_PER_DEVICE * 2 + TOUCH_CHANNELS_PER_DEVICE
-
         for device in range(2):
             base = device * stride
             cp_values = [
@@ -1371,11 +1373,13 @@ def cmd_touch(client: MagicConfigClient, argv: list[str]) -> None:
                 | payload[base + channel * 2 + 1]
                 for channel in range(TOUCH_CHANNELS_PER_DEVICE)
             ]
-            comp_base = base + TOUCH_CHANNELS_PER_DEVICE * 2
+            comp_base = base + cp_bytes
             comp_values = [
                 payload[comp_base + channel]
                 for channel in range(TOUCH_CHANNELS_PER_DEVICE)
             ]
+            age_base = comp_base + comp_bytes
+            age_ms = (payload[age_base] << 8) | payload[age_base + 1]
 
             psoc = 0x08 + device
             print(f"PSoC 0x{psoc:02X}:")
@@ -1394,6 +1398,7 @@ def cmd_touch(client: MagicConfigClient, argv: list[str]) -> None:
             print(
                 f"  Cp 合计 {sum(cp_values)} 平均 {sum(cp_values) / len(cp_values):.1f}"
                 f" | 补偿IDAC 合计 {sum(comp_values)}"
+                f" | 快照年龄 {age_ms} ms"
             )
         return
 

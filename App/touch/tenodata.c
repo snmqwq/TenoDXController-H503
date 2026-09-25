@@ -110,6 +110,8 @@ static bool comp_idac_valid[PSOC_COMM_DEVICE_COUNT];
 static uint32_t last_cal_capture_tick[PSOC_COMM_DEVICE_COUNT];
 /* 首轮抓取成功后, 是否还需要做一次确认读 */
 static bool cal_capture_confirm_pending[PSOC_COMM_DEVICE_COUNT];
+/* 校准量真正抓取成功的时刻 (HAL tick), 供 Magic 上报"快照年龄" */
+static uint32_t cal_captured_tick[PSOC_COMM_DEVICE_COUNT];
 static uint8_t discovery_candidate_mask;
 static uint8_t locked_discovery_mask;
 static uint8_t read_failure_count[PSOC_COMM_DEVICE_COUNT];
@@ -236,6 +238,7 @@ static void capture_cal_if_ready(uint8_t device_index, uint8_t psoc_status)
         /* 刚看到校准完成时读到的可能是"写了一半"的区域, 稍后再确认读一次
          * (时间戳保持不动, 由 confirm_cal_capture 负责延迟后重读) */
         cal_capture_confirm_pending[device_index] = true;
+        cal_captured_tick[device_index] = HAL_GetTick();
     }
 }
 
@@ -265,6 +268,7 @@ static void confirm_cal_capture(uint32_t now)
         {
             cal_capture_confirm_pending[index] = false;
             last_cal_capture_tick[index] = now;
+            cal_captured_tick[index] = now;
         }
     }
 }
@@ -446,6 +450,7 @@ static void start_initialization(uint32_t now)
     memset(comp_idac_valid, 0, sizeof(comp_idac_valid));
     memset(last_cal_capture_tick, 0, sizeof(last_cal_capture_tick));
     memset(cal_capture_confirm_pending, 0, sizeof(cal_capture_confirm_pending));
+    memset(cal_captured_tick, 0, sizeof(cal_captured_tick));
     active_device = 0U;
     pending_read_device = 0U;
     read_inflight = false;
@@ -882,6 +887,22 @@ bool tenodata_get_comp_idac(uint8_t device_index, uint8_t *comp_out)
     }
 
     memcpy(comp_out, comp_idac[device_index], PSOC_COMM_COMP_IDAC_LENGTH);
+    return true;
+}
+
+bool tenodata_get_cal_age_ms(uint8_t device_index, uint16_t *age_ms)
+{
+    uint32_t age;
+
+    if ((device_index >= PSOC_COMM_DEVICE_COUNT) ||
+        (age_ms == NULL) ||
+        !cp_valid[device_index])
+    {
+        return false;
+    }
+
+    age = HAL_GetTick() - cal_captured_tick[device_index];
+    *age_ms = (age > UINT16_MAX) ? UINT16_MAX : (uint16_t)age;
     return true;
 }
 

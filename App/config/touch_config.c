@@ -22,10 +22,12 @@
 /* 0x05 写入载荷: 1 字节, 非 0 表示强制上位机重新下发扫描参数 */
 #define TOUCH_FORCE_RESEND_TRIGGER        0x01U
 
-/* 0x06 读取载荷: 每片 = Cp(17ch × 2B 大端) + 补偿 IDAC(17ch × 1B) */
+/* 0x06 读取载荷: 每片 = Cp(17ch × 2B 大端) + 补偿 IDAC(17ch × 1B) + 快照年龄(2B 大端, ms) */
+#define TOUCH_CP_DEVICE_AGE_LENGTH        2U
 #define TOUCH_CP_DEVICE_LENGTH            (PSOC_COMM_CP_LENGTH)
 #define TOUCH_CP_DEVICE_STRIDE \
-    (PSOC_COMM_CP_LENGTH + PSOC_COMM_COMP_IDAC_LENGTH)
+    (PSOC_COMM_CP_LENGTH + PSOC_COMM_COMP_IDAC_LENGTH + \
+     TOUCH_CP_DEVICE_AGE_LENGTH)
 #define TOUCH_CP_PAYLOAD_LENGTH \
     (TENODATA_STATUS_DEVICE_COUNT * TOUCH_CP_DEVICE_STRIDE)
 
@@ -61,8 +63,8 @@ _Static_assert(sizeof(touch_config_payload_t) == 70U,
                "Touch all/Flash payload must be 70 bytes");
 _Static_assert(TOUCH_STATUS_PAYLOAD_LENGTH == 16U,
                "Touch status payload must be 16 bytes");
-_Static_assert(TOUCH_CP_PAYLOAD_LENGTH == 102U,
-               "Touch Cp payload must be 102 bytes (2 devices x (34B Cp + 17B comp))");
+_Static_assert(TOUCH_CP_PAYLOAD_LENGTH == 106U,
+               "Touch Cp payload must be 106 bytes (2 x (34B Cp + 17B comp + 2B age))");
 
 /* Magic callbacks run synchronously from the main loop, so shared work
  * buffers avoid placing several mapping objects on the MCU stack.
@@ -249,7 +251,8 @@ static bool touch_magic_read(uint8_t param,
 
         case TOUCH_PARAM_CP:
         {
-            /* 每片: Cp 34 字节 (17 通道 × 2 字节大端) + 补偿 IDAC 17 字节。
+            /* 每片: Cp 34 字节 (17 通道 × 2 字节大端) + 补偿 IDAC 17 字节
+             *       + 快照年龄 2 字节 (大端, ms)。
              * 无效片 (未校准成功/刚重配) 整片填 0, 上位机会显示为 "-",
              * 因此参数整体只要长度够就返回成功。 */
             if (max_length < TOUCH_CP_PAYLOAD_LENGTH)
@@ -264,10 +267,21 @@ static bool touch_magic_read(uint8_t param,
                  index++)
             {
                 uint8_t *slot = &data[index * TOUCH_CP_DEVICE_STRIDE];
+                uint8_t *age = &slot[TOUCH_CP_DEVICE_LENGTH +
+                                    PSOC_COMM_COMP_IDAC_LENGTH];
+                uint16_t age_ms = 0U;
 
                 (void)touch_app_get_cp(index, slot);
                 (void)touch_app_get_comp_idac(
                     index, &slot[TOUCH_CP_DEVICE_LENGTH]);
+
+                /* 让上位机知道这份快照是多久以前抓的:
+                 * 数值不变但年龄在涨 = PSoC 没有重新测量。 */
+                if (touch_app_get_cal_age_ms(index, &age_ms))
+                {
+                    age[0] = (uint8_t)(age_ms >> 8U);
+                    age[1] = (uint8_t)(age_ms & 0xFFU);
+                }
             }
 
             *out_length = TOUCH_CP_PAYLOAD_LENGTH;

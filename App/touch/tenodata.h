@@ -58,6 +58,10 @@ bool tenodata_get_cp(uint8_t device_index, uint8_t *cp_out);
  * PSoC 在 SAR 校准中按目标 raw 百分比调整该值, 与 Cp 同时抓取。 */
 bool tenodata_get_comp_idac(uint8_t device_index, uint8_t *comp_out);
 
+/* 校准量快照的"年龄"(距今毫秒数)。返回 false 表示该片当前没有有效快照。
+ * 让上位机能判断读到的是刚校准测的、还是很久以前的。 */
+bool tenodata_get_cal_age_ms(uint8_t device_index, uint16_t *age_ms);
+
 #ifdef __cplusplus
 }
 #endif

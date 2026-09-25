@@ -34,6 +34,9 @@ bool touch_app_get_cp(uint8_t device_index, uint8_t *cp_out);
 /* Magic touch 0x06: 读取某片的补偿 IDAC (17 通道 × 1 字节)。 */
 bool touch_app_get_comp_idac(uint8_t device_index, uint8_t *comp_out);
 
+/* Magic touch 0x06: 某片校准量快照的年龄(ms)；无有效快照返回 false。 */
+bool touch_app_get_cal_age_ms(uint8_t device_index, uint16_t *age_ms);
+
 #ifdef __cplusplus
 }
 #endif
