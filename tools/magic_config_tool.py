@@ -76,11 +76,19 @@ TOUCH_MAP_ENTRY_SIZE = 2
 TOUCH_BATCH_RECORD_SIZE = 1 + TOUCH_MAP_ENTRY_SIZE
 TOUCH_MODE_RAW = 0
 TOUCH_MODE_MAI2TOUCH = 1
+TOUCH_MODE_AUTO = 2
 TOUCH_MODE_VALUES = {
     "raw": TOUCH_MODE_RAW,
     "mai2touch": TOUCH_MODE_MAI2TOUCH,
+    "auto": TOUCH_MODE_AUTO,
 }
-TOUCH_MODE_NAMES = {value: name for name, value in TOUCH_MODE_VALUES.items()}
+# 2 = 自动识别 (默认): 收到 0xAA 0x01 走 raw, 收到 {....} 走 Mai2Touch。
+# 当前实际在跑哪一侧由 `touch status` 显示。
+TOUCH_MODE_NAMES = {
+    TOUCH_MODE_RAW: "raw",
+    TOUCH_MODE_MAI2TOUCH: "mai2touch",
+    TOUCH_MODE_AUTO: "auto",
+}
 TOUCH_STATE_NAMES = {
     0: "等待发现 PSoC",
     1: "准备 PSoC",
@@ -392,13 +400,15 @@ def parse_touch_batch_args(argv: list[str]) -> list[tuple[int, TouchMapEntry]]:
 def parse_touch_mode(text: str) -> int:
     mode = text.strip().lower()
     if mode not in TOUCH_MODE_VALUES:
-        raise ValueError("touch mode must be raw or mai2touch")
+        raise ValueError("touch mode must be raw, mai2touch or auto")
     return TOUCH_MODE_VALUES[mode]
 
 
 def decode_touch_mode(payload: bytes) -> int:
     if len(payload) != 1 or payload[0] not in TOUCH_MODE_NAMES:
-        raise ValueError("touch mode response must be one byte: 0=raw or 1=mai2touch")
+        raise ValueError(
+            "touch mode response must be one byte: 0=raw, 1=mai2touch, 2=auto"
+        )
     return payload[0]
 
 
@@ -949,8 +959,11 @@ touch 命令:
   touch set <channel> <zone>  修改一个通道；block 由 zone 自动确定
   touch set-many <channel> <zone> [...]
                               按二元组一次修改多个通道，同批通道不可重复
-  touch mode                  读取 CDC0 输出模式
-  touch mode <raw|mai2touch>  设置 CDC0 输出模式
+  touch mode                  读取 CDC0 输出模式 (raw / mai2touch / auto)
+  touch mode <raw|mai2touch|auto>
+                              设置 CDC0 输出模式；raw/mai2touch = 强制固定，
+                              auto = 恢复自动识别 (默认值: 收到 0xAA 0x01 走 raw,
+                                收到 {....} 走 Mai2Touch)
   touch save                  保存当前 Touch 配置到 Flash
   touch defaults              恢复 Touch 默认配置到 RAM
   touch info                  读取固件暴露的 Touch 参数列表
@@ -1258,7 +1271,7 @@ def cmd_touch(client: MagicConfigClient, argv: list[str]) -> None:
                 print(f"Touch mode = {TOUCH_MODE_NAMES[mode]}")
             return
         if len(argv) != 2:
-            command_error("touch mode 接受 0 或 1 个参数: [raw|mai2touch]", "touch")
+            command_error("touch mode 接受 0 或 1 个参数: [raw|mai2touch|auto]", "touch")
             return
         try:
             mode = parse_touch_mode(argv[1])

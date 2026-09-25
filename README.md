@@ -77,6 +77,27 @@ PC13 状态灯不区分 1P/2P 布局：
 
 ## 触摸数据
 
+### CDC0 输出模式：默认自动识别
+
+CDC0（Touch 口）被两方共用，固件**默认按收到的帧特征自动选择**，不需要手工切模式：
+
+| 当前侧 | 判据 | 动作 |
+| --- | --- | --- |
+| raw（上位机调试） | 收齐一条**语法合法**的 6 字节 Mai2Touch 命令 `{` + 4 字节 + `}` | 切到 Mai2Touch，并把这条命令**补喂**给 Mai2Touch 解析 |
+| Mai2Touch（游戏） | 收到 raw 参数帧头 `0xAA 0x01` | 切回 raw，剩余字节留给 raw 流程 |
+
+- **为什么要校验完整的 6 字节**：raw 参数帧的 136 字节 payload 全是扫描参数（`res/mod/sns/div` ≤ 16），
+  但**校验和字节可能等于 `0x7B`（`{`）**。上位机每秒重发一次参数帧，若"见到 `{` 就切"迟早会误切。
+  Mai2Touch 的数据字节只用到低 5 位、命令全是 ASCII，流里**不可能出现 `0xAA`**，所以反方向只需两字节确认。
+- **为什么要补喂**：`{STAT}`（开始推流）和 `{L/R..}`（游戏靠逐条回显推进配置）都不是"复位"语义，
+  被 raw 侧读走用于校验后必须原样重放给 Mai2Touch，否则游戏会卡在配置阶段或在 Drive 阶段收不到触摸数据。
+- **`{STAT}` 之后立刻开始推流**：软件基线管线还没就绪时先发**空白帧（34 位全 0）**，4 ms 一帧，
+  不等 PSoC 数据 —— 游戏进入 Drive 后只收不发，收不到任何触摸结果就会报错。
+- `{HALT}` 之后**完全静默**（游戏靠读超时进入配置模式），`{RSET}` 无条件复位发送状态。
+- 切到 Mai2Touch **不会复位/重配 PSoC**（游戏此时正在配置阶段）；切回 raw 会重走一次初始化（约 1~2 秒触摸输出中断）。
+- Magic `touch` 参数 `0x02` 写 `0`/`1` 可**强制**固定到某一侧（调试用），写 `2` 恢复自动识别；
+  写入与当前一致的值不会退出自动识别。`touch defaults` 也恢复自动识别。
+
 I2C1 读取地址为 `0x08` 和 `0x09` 的两个 PSoC。CDC0 约每 2 ms 发送一次当前快照；两个 PSoC 交替轮询，单个 PSoC 的数据约每 4 ms 更新一次（约 250 Hz）。
 
 CDC0 帧固定为 70 字节：
@@ -142,7 +163,7 @@ Touch 模块参数：
 | 参数 | 读写 | 载荷 |
 | --- | --- | --- |
 | `0x01` | 读/写 | 68 字节完整映射表；按物理通道顺序排列 34 个 `[region, block]` 记录 |
-| `0x02` | 读/写 | 1 字节 CDC0 模式：`0` 为 PSoC raw，`1` 为 Mai2Touch |
+| `0x02` | 读/写 | 1 字节 CDC0 模式：`0` 强制 PSoC raw，`1` 强制 Mai2Touch，`2` **自动识别**（默认，读回也是 `2`；当前实际在跑哪一侧见 `0x04` 状态） |
 | `0x03` | 写 | 批量部分更新；每条 3 字节 `[channel, region, block]` |
 | `0x04` | 读 | PSoC 状态快照；`GET_INFO` 回 10 字节能力表（第 8 字节 bit0 = 支持 `0x05`，第 9/10 字节为只读参数 `0x04`/`0x06`） |
 | `0x05` | 写 | 1 字节 `0x01`：清除固件缓存的上位机扫描参数并重走初始化，使 CDC0 重新上报 `0x01`，让上位机重新下发扫描参数帧 |
@@ -235,7 +256,8 @@ maimai_controller_H503_YYYYMMDD_HHMMSS.hex
 外设和引脚配置以 `maimai_controller_H503.ioc` 为准。
 
 仓库还提供独立于 CubeIDE 的 CMake 构建入口。默认使用与 CubeIDE `Release`
-一致的 `-Os/-g0` 参数，也可以通过 `CMAKE_BUILD_TYPE=Debug` 构建调试版本：
+一致的 `-Os/-g0` 参数，也可以通过 `CMAKE_BUILD_TYPE=Debug` 构建调试版本
+（Debug 默认 `-Og`；`-O0` 会让 FLASH 超出 120K 区域）：
 
 ```powershell
 cmake -S . -B build/firmware `
@@ -243,6 +265,20 @@ cmake -S . -B build/firmware `
   -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake
 cmake --build build/firmware --parallel
 ```
+
+### 本机单元测试（不需要板子）
+
+`tests/native_mode_test.c` 直接编译**真实**的 `cdc_manager.c` / `touch_mode.c` /
+`mai2touch.c`（只 stub TinyUSB、HAL、`touch_pipeline` 和 `tenodata` 的少数函数），
+复刻真实主循环的 tick 顺序，覆盖 CDC0 模式自动识别与 Mai2Touch 会话行为：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tests\build_native_test.ps1
+```
+
+覆盖场景：完整握手（`{RSET}` → 配置回显 → `{STAT}`）、`{STAT}` 立即发空白帧、
+`{HALT}` 完全静默、双向自动切换、raw 帧校验和等于 `0x7B` 时不误切、
+非法命令体不切换、触发切换的命令被正确补喂、Magic 强制模式优先、半截帧头不切换。
 
 推送到 `main`、创建面向 `main` 的 Pull Request 或手动运行 **Build firmware**
 工作流时，GitHub Actions 会使用 Arm GNU Toolchain 13.3.Rel1 构建 Release 固件。
@@ -265,6 +301,7 @@ cmake --build build/firmware --parallel
 | `Drivers/` | STM32 HAL 与 CMSIS |
 | `tinyusb/` | TinyUSB 协议栈 |
 | `tools/` | 配置和测试工具 |
+| `tests/` | 本机单元测试（编译真实模块，不需要板子） |
 | `ref/` | 协议、原理图和移植参考资料 |
 
 ## 许可证

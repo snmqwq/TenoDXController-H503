@@ -31,8 +31,11 @@
 #define TOUCH_CP_PAYLOAD_LENGTH \
     (TENODATA_STATUS_DEVICE_COUNT * TOUCH_CP_DEVICE_STRIDE)
 
+/* cdc_mode 取值: 0/1 = 强制固定到某一侧, 2 = 自动识别 (默认)。
+ * 读回时会报告 2, 当前实际在跑哪一侧由状态参数 0x04 显示。 */
 #define TOUCH_CDC_MODE_RAW                0U
 #define TOUCH_CDC_MODE_MAI2TOUCH          1U
+#define TOUCH_CDC_MODE_AUTO               2U
 #define TOUCH_PAYLOAD_VERSION             2U
 #define TOUCH_STATUS_PAYLOAD_VERSION      1U
 #define TOUCH_STATUS_HEADER_LENGTH        4U
@@ -77,11 +80,21 @@ static touch_config_payload_t stored_payload_buffer;
 static bool cdc_mode_is_valid(uint8_t mode)
 {
     return (mode == TOUCH_CDC_MODE_RAW) ||
-           (mode == TOUCH_CDC_MODE_MAI2TOUCH);
+           (mode == TOUCH_CDC_MODE_MAI2TOUCH) ||
+           (mode == TOUCH_CDC_MODE_AUTO);
 }
 
 static uint8_t current_cdc_mode(void)
 {
+    /* 处于自动识别时报告 AUTO(2), 而不是"当前碰巧在跑的那一侧":
+     * 这样 (a) 读回的模式是真实状态, (b) 存进 Flash 的也是 AUTO,
+     * 下次上电不会因为"上次存配置时游戏正好在跑"而被钉死在 Mai2Touch。
+     * 当前实际在跑哪一侧由 `touch status` (参数 0x04) 显示。 */
+    if (touch_app_is_auto_mode())
+    {
+        return TOUCH_CDC_MODE_AUTO;
+    }
+
     return touch_app_is_mai2touch_active() ?
            TOUCH_CDC_MODE_MAI2TOUCH :
            TOUCH_CDC_MODE_RAW;
@@ -94,6 +107,22 @@ static bool touch_config_apply(TenodataChannelMapping const *mapping,
     if (!cdc_mode_is_valid(cdc_mode))
     {
         return false;
+    }
+
+    if (cdc_mode == TOUCH_CDC_MODE_AUTO)
+    {
+        /* 恢复自动识别: 映射照常应用, 但模式留在当前这一侧不动,
+         * 之后由 touch_mode 按收到的帧特征自己纠正。
+         * 写入与当前一致的模式不会退出自动识别 (见 cdc_manager_set_mai2touch_active),
+         * 所以这里传"当前实际模式"即可。 */
+        bool ok = touch_app_apply_config(
+            mapping,
+            TENODATA_TOTAL_CHANNELS,
+            touch_app_is_mai2touch_active(),
+            force_resend);
+
+        touch_app_set_auto_mode();
+        return ok;
     }
 
     return touch_app_apply_config(
@@ -357,7 +386,16 @@ static bool touch_magic_write_mode(uint8_t mode)
         return false;
     }
 
-    return touch_config_apply(mapping_buffer, mode, false);
+    bool ok = touch_config_apply(mapping_buffer, mode, false);
+
+    if (mode != TOUCH_CDC_MODE_AUTO)
+    {
+        /* 显式写 0/1 = 强制固定: touch_config_apply 只在"输出侧真的变了"时才动
+         * 模式, 所以这里再补一次无条件强制, 确保 AUTO 被关掉。 */
+        touch_app_force_cdc_mode(mode == TOUCH_CDC_MODE_MAI2TOUCH);
+    }
+
+    return ok;
 }
 
 /* 0x05: 清掉本地缓存的上位机扫描参数覆盖, 并重走初始化流程,
@@ -419,7 +457,7 @@ static bool touch_magic_load_default(uint8_t param)
         return false;
     }
 
-    return touch_config_apply(mapping_buffer, TOUCH_CDC_MODE_MAI2TOUCH, false);
+    return touch_config_apply(mapping_buffer, TOUCH_CDC_MODE_AUTO, false);
 }
 
 static bool touch_magic_info(uint8_t param,

@@ -5,6 +5,7 @@
 #include "cdc_manager.h"
 #include "mai2touch.h"
 #include "tenodata.h"
+#include "touch_mode.h"
 #include "touch_pipeline.h"
 
 /* Magic configuration is handled synchronously in the main loop. */
@@ -14,12 +15,17 @@ static TenodataChannelMapping
 void touch_app_init(void)
 {
     cdc_manager_init();
+    touch_mode_init();
     tenodata_init();
     mai2touch_init();
 }
 
 void touch_app_task(void)
 {
+    /* 先消化模式识别结果 (可能切到 Mai2Touch 或切回 raw),
+     * 再跑两个模式的 task —— 这样切换当帧就按新模式工作 */
+    touch_mode_task();
+
     tenodata_task();
     mai2touch_task();
 }
@@ -27,6 +33,27 @@ void touch_app_task(void)
 bool touch_app_is_mai2touch_active(void)
 {
     return cdc_manager_is_mai2touch_active();
+}
+
+bool touch_app_is_auto_mode(void)
+{
+    return cdc_manager_is_auto_mode();
+}
+
+void touch_app_set_auto_mode(void)
+{
+    /* 留在当前实际在跑的那一侧, 只是把"强制"标记摘掉:
+     * 识别器随后会按收到的帧特征自行纠正, 不会造成无谓的重新初始化。 */
+    cdc_manager_set_auto_mode(cdc_manager_is_mai2touch_active());
+    touch_mode_init();
+}
+
+void touch_app_force_cdc_mode(bool mai2touch)
+{
+    /* Magic 显式写入 cdc_mode 0/1: 无论输出侧是否变化都要强制固定,
+     * 否则在 AUTO 且恰好就在这一侧时, 自动识别仍然会把模式带走。 */
+    cdc_manager_force_mode(mai2touch);
+    touch_mode_init();
 }
 
 bool touch_app_get_mapping(TenodataChannelMapping *mapping, uint8_t count)

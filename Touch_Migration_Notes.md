@@ -209,23 +209,102 @@
 - **兼容性**: **契约不向后兼容**——上位机已按 106 字节解析，需与固件同步升级
   （旧固件会因长度不符被上位机判为错误）。
 
+### 节点 14: CDC0 走 raw 还是 Mai2Touch —— 改成自动识别 + {STAT} 立即发空白帧
+- **日期**: 2026-09-25
+- **背景**: 用户同时用两套协议：`tenodata`(raw) 是自己调试用的，`mai2touch` 是游戏读的。
+  每次切换都要手工改 Magic 模式，太麻烦。诉求：**发过来的是 raw 特征就走 raw 流程，
+  是 Mai2Touch 特征就用 STM32 自带的扫描参数工作**；而且 Mai2Touch 在跑完 `{STAT}` 前的
+  交流之后**必须先发空白触摸帧，不要等 PSoC 数据**，否则游戏收不到触摸结果会报错。
+- **分析**:
+  - 两个方向的可靠度**不对称**：
+    - Mai2Touch 的流里**不可能出现 `0xAA`**（触摸数据每字节只用低 5 bit ≤ `0x1F`，
+      命令全是 ASCII），所以 `0xAA 0x01` 是可靠标志。
+    - raw 帧的 136 B payload 全是小数值（`res/mod/sns/div` ≤ 16），但**校验和字节可能是
+      `0x7B`(`{`)**。上位机每秒重发一次参数帧，若"见到 `{` 就切"，迟早误切。
+  - 因此 raw→Mai2Touch 必须**凑齐 6 字节并校验命令语法**才切。但这样一来整条命令已被
+    raw 侧读走，而 `{STAT}`（开始推流）与 `{L/R..}`（游戏靠逐条回显推进配置，`_countRecv`
+    用回显里的 sensor 字符当游标）都**不是"复位"语义**，靠 `mai2touch_init()` 顶替会：
+    丢 `{STAT}` → Drive 阶段一个字节都收不到 → 游戏报错；丢 `{LAr2}` → 配置阶段卡死。
+    → 必须**补喂（replay）**触发切换的那条原始命令。
+  - `{HALT}` 之后必须**完全静默**（游戏靠读超时进配置模式），所以空白帧只能在 `{STAT}`
+    之后发，不能在 `{HALT}` 之后发。
+- **变更**:
+  - **新增 `App/touch/touch_mode.h/c`**：模式识别器。
+    - raw 侧：按位置收集 `{` + 4 B + `}`，再校验命令体语法
+      （`RSET`/`HALT`/`STAT`，或 `L|R` + sensor `0x41..0x62` + `r|k`）。
+      sensor 是 **A1 起连续 34 个 ASCII 码**（C 区只有 2 个点，不是"区字母+序号"）；
+      sensitivity 的值**可能是控制字符**（默认档 A 区 `0x28`、B~E 区 `0x14`），
+      所以第 4 个命令字节允许任意值。
+    - Mai2Touch 侧：只找 `0xAA` 然后 `0x01`。
+    - 切换**不在读字节当刻执行**，而是置 `switch_pending` 由 `touch_mode_task()` 执行；
+      两个消费者用 `touch_mode_pending_to_*()` 决定"是否立刻停手"，避免吃掉对方命令的剩余字节。
+    - `touch_mode_take_replay()` 把触发切换的原始 6 字节交回。
+  - **`App/touch/cdc_manager.h/c`**：`cdc_mode_t` 扩成 4 态
+    （`AUTO_RAW` / `AUTO_MAI2TOUCH` / `FORCED_RAW` / `FORCED_MAI2TOUCH`），默认 `AUTO_RAW`
+    （没接游戏时上位机链路直接可用）。新增 `cdc_manager_is_auto_mode()`、
+    `cdc_manager_set_auto_detected()`、`cdc_manager_set_auto_mode()`。
+    `cdc_manager_set_mai2touch_active()` 改为**值没变就不动**——`touch_app_apply_config()`
+    每次配置变更都会按"当前模式"调用它，若无条件变成强制模式，自动识别会被永久关掉。
+  - **`App/touch/mai2touch.c/h`**：
+    - 新增 `mai2touch_send_bits()` / `mai2touch_pack_and_send()`：`touch_pipeline_is_ready()`
+      为假时发 **`bits = 0` 的空白帧**（合法的"无人触摸"帧），4 ms 一帧。
+    - `{STAT}`：`sending = true` 且 `next_send_tick = HAL_GetTick()` —— **当拍就发第一帧**。
+    - `{RSET}`：新增 `mai2touch_cmd_rset()` 无条件复位 `touch_bits/sending/rx_len`（§8.7）。
+    - `{HALT}`：只停发、不回包（§8.2）。
+    - 单字节解析抽出为 `mai2touch_handle_byte()`，新增
+      `mai2touch_replay_command()` 供切换时补喂；`mai2touch_process_rx()` 改成非 static
+      并在**读之前**检查 `pending_to_raw`/非活跃，便于本机单测直接驱动。
+  - **`App/touch/tenodata.c`**：`consume_host_config_frame()` 每个字节喂识别器；
+    `tenodata_task()` 里 raw 侧消费已由 `!cdc_manager_is_mai2touch_active()` 守卫
+    （Mai2Touch 模式独占 CDC RX）。
+  - **`App/touch/touch_app.c/h`**：`touch_app_task()` 先跑 `touch_mode_task()`；
+    新增 `touch_app_is_auto_mode()` / `touch_app_set_auto_mode()`。
+  - **`App/config/touch_config.c`**：`cdc_mode` 新增 **`2` = 自动识别**（默认值，读回也是 `2`；
+    当前实际在跑哪一侧由状态参数 `0x04` 显示）。写 `0`/`1` 会无条件把强制标记立起来
+    （即使输出侧本来就在那一侧），走的是新增的 `touch_app_force_cdc_mode()`；
+    写 `2` 恢复 AUTO。`touch defaults` 改为走 AUTO，不再把模式钉死在 Mai2Touch。
+    存 Flash 的载荷也记 AUTO，避免"上次存配置时游戏正好在跑 → 下次上电被钉死在 Mai2Touch"。
+  - **`tools/magic_config_tool.py`**：`touch mode` 支持 `auto`（`2`），帮助文本更新。
+  - **新增本机单测 `tests/native_mode_test.c` + `tests/build_native_test.ps1`**：用 MinGW gcc
+    直接编译**真实**的 `cdc_manager.c`/`touch_mode.c`/`mai2touch.c`（只 stub TinyUSB/HAL/
+    touch_pipeline/tenodata 少数函数），复刻真实 tick 顺序，11 个场景全绿。
+- **影响**:
+  - 插上游戏就能跑，不用再切模式；拔掉游戏、上位机一发参数帧就自动切回 raw。
+  - 切到 Mai2Touch **不动 PSoC**（游戏正在配置阶段，插一次 1~2 秒的软复位+校准会打断握手）；
+    切回 raw 会重走初始化（约 1~2 秒触摸输出中断），并清除跨模式的参数覆盖。
+  - 用 Magic 强制 `0`/`1` 后仍可固定模式（调试用），写 `2` 或 `touch defaults` 恢复自动识别；
+    默认与读回都是 `2`（自动识别）。
+- **验证**:
+  - 本机单测 11 场景全部通过（含"校验和 = `0x7B` 不误切"、"`{STAT}`/`{LAr2}` 触发切换后
+    补喂成功"、"`{STAT}` 立即发空白帧"、"`{HALT}` 后 20 个发送周期零字节"）。
+  - Release 构建通过：`text 67960 / data 184 / bss 15808`（FLASH 上限 122880，余量充足）。
+- **注意**: 固件需要重新烧录（本次未接 ST-Link，需用 CubeIDE 烧）。
+
 ---
 
 ## 当前文件结构
 ```
 App/touch/
 ├── touch_app.h/c                 ← Touch 统一初始化、任务和配置入口
+├── touch_mode.h/c                ← CDC0 模式自动识别（raw ↔ Mai2Touch）
 ├── tenodata_config.h/c           ← 统一通道映射与固定 A–E 扫描档位
 ├── psoc_comm.h/c                 ← PSoC I2C 通信
 ├── tenodata.h/c                  ← 初始化/重配置状态机 + raw CDC 推流
 ├── touch_pipeline.h/c            ← 软件基线、Detector 和区域 OR 合并
 ├── button_detector*.h/c          ← A–E 触摸判定逻辑
 ├── mai2touch.h/c                 ← Mai2Touch 协议
-└── cdc_manager.h/c               ← CDC0 收发管理 + 路由开关
+└── cdc_manager.h/c               ← CDC0 收发管理 + 路由开关（AUTO / 强制）
+tests/
+├── native_mode_test.c            ← 本机单测（编译真实模块，不需板子）
+├── native_stubs/                 ← TinyUSB / HAL stub 头
+└── build_native_test.ps1         ← 用 MinGW gcc 构建并运行
 ```
 
 ## CDC 路由规则
-| `is_mai2touch_active` | tenodata 发送 | mai2touch 发送 | CDC RX 分发 |
+| 模式 | tenodata 发送 | mai2touch 发送 | CDC RX 分发 |
 |:---:|:---:|:---:|:---:|
-| `false` | 正常发送 | 丢弃 | tenodata |
-| `true` | 丢弃 | 正常发送 | mai2touch |
+| `AUTO_RAW` / `FORCED_RAW` | 正常发送 | 丢弃 | tenodata（喂识别器找 `{`) |
+| `AUTO_MAI2TOUCH` / `FORCED_MAI2TOUCH` | 丢弃 | 正常发送 | mai2touch（喂识别器找 `0xAA 0x01`） |
+
+自动识别只在 `AUTO_*` 下生效；`FORCED_*` 由 Magic `touch` 参数 `0x02` 写入 `0`/`1` 设定，
+写 `2` 恢复 AUTO。

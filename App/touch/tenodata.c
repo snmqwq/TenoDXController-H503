@@ -4,6 +4,7 @@
 #include "main.h"
 #include "psoc_comm.h"
 #include "tenodata_config.h"
+#include "touch_mode.h"
 #include "touch_pipeline.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -752,6 +753,20 @@ static void consume_host_config_frame(void)
         uint8_t byte;
 
         (void)cdc_manager_rx_read(&byte, 1U);
+
+        /* 喂给模式识别器: 收到 `{` 会自动切到 Mai2Touch 流程 */
+        touch_mode_observe_byte(byte);
+
+        /* 一旦识别出对方是 Mai2Touch, 立刻停止消费 —— 剩下的字节属于
+         * 对方那条命令 (如 {RSET} 的 "SET}"), 必须留给 mai2touch 解析,
+         * 否则游戏会收不到完整命令而报错。
+         * 必须用 pending 判断: 切换在 touch_mode_task() 里才执行, 此刻
+         * cdc_manager 的活跃标志还是旧的。 */
+        if (touch_mode_pending_to_mai2touch() ||
+            cdc_manager_is_mai2touch_active())
+        {
+            return;
+        }
 
         switch (host_cfg_rx_state)
         {

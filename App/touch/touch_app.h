@@ -15,6 +15,16 @@ void touch_app_init(void);
 void touch_app_task(void);
 
 bool touch_app_is_mai2touch_active(void);
+
+/* 是否处于自动识别模式 (未被 Magic 强制固定到某一侧) */
+bool touch_app_is_auto_mode(void);
+
+/* 摘掉"强制模式"标记, 回到自动识别 (Magic cdc_mode = 2) */
+void touch_app_set_auto_mode(void);
+
+/* 强制固定到某一侧 (Magic cdc_mode = 0/1); 优先级高于自动识别 */
+void touch_app_force_cdc_mode(bool mai2touch);
+
 bool touch_app_get_mapping(TenodataChannelMapping *mapping, uint8_t count);
 bool touch_app_get_default_mapping(TenodataChannelMapping *mapping,
                                    uint8_t count);
