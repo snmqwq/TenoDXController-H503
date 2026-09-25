@@ -10,15 +10,24 @@
 #define PSOC_COMM_PAYLOAD_LENGTH        34U    // 仅数据载荷 (不含 Status)
 #define PSOC_COMM_CHANNELS_PER_DEVICE   17U
 #define PSOC_COMM_CONFIG_LENGTH         68U    // 17ch × 4 参数
+#define PSOC_COMM_CP_LENGTH             34U    // 17ch × 2byte 寄生电容 Cp
+#define PSOC_COMM_COMP_IDAC_LENGTH      17U    // 17ch × 1byte 补偿 IDAC
+/* Cp + 补偿 IDAC 在 EZI2C 里连续, 一次事务读完 */
+#define PSOC_COMM_CAL_LENGTH \
+    (PSOC_COMM_CP_LENGTH + PSOC_COMM_COMP_IDAC_LENGTH)
 
 // EZI2C 内存映射
 #define PSOC_EZI2C_OFFSET_STATUS        0x00U
+#define PSOC_EZI2C_OFFSET_CP            0x23U  // = 35, PSoC 侧 OFFSET_CP
+#define PSOC_EZI2C_OFFSET_COMP_IDAC     0x45U  // = 69, PSoC 侧 OFFSET_COMP_IDAC
 #define PSOC_EZI2C_OFFSET_CONFIG        0x56U  // = 86
 
 // PSoC 状态码
 #define PSOC_STATUS_CRASH               0x00U
 #define PSOC_STATUS_START_CALIBRATION   0x01U
 #define PSOC_STATUS_CALIBRATION_DONE    0x02U
+#define PSOC_STATUS_CP_READY            0x13U  // 校准进度: 已写入物理电容 Cp
+#define PSOC_STATUS_COMP_READY          0x14U  // 校准进度: SAR 校准完成, 已写入补偿 IDAC
 #define PSOC_COMMAND_SOFT_RESET         0xADU
 
 // ================= 类型 =================
@@ -75,6 +84,18 @@ uint8_t psoc_comm_soft_reset_all(void);
 
 // 读取 PSoC 状态 (阻塞)
 bool psoc_comm_read_status(uint8_t device_index, uint8_t *status_out);
+
+// 读取该片 17 通道寄生电容 Cp (阻塞)。
+// PSoC 只在校准流程的状态 0x13 写一次, 软复位后清零;
+// cp_out 需要 34 字节, 按通道顺序每通道 2 字节 **大端** (与 PSoC 一致)。
+bool psoc_comm_read_cp(uint8_t device_index, uint8_t *cp_out);
+
+// 读取该片 17 通道 Cp + 补偿 IDAC (阻塞, 一次事务读连续 51 字节)。
+// PSoC 在状态 0x13 写 Cp、状态 0x14 的 SAR 校准后写补偿 IDAC;
+// cp_out 需要 34 字节 (2B/通道, 大端), comp_out 需要 17 字节 (1B/通道)。
+bool psoc_comm_read_cal(uint8_t device_index,
+                        uint8_t *cp_out,
+                        uint8_t *comp_out);
 
 // 检查 I2C 总线是否空闲
 bool psoc_comm_is_bus_ready(void);

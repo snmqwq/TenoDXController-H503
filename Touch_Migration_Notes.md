@@ -53,6 +53,90 @@
   - 增加复位、校准和异步 I2C 事务超时，以及故障恢复退避，避免单台故障阻塞健康设备
 - **影响**: 单片 PSoC 缺失或运行中掉线时，另一片仍可继续提供 raw 数据和触摸判定
 
+### 节点 8: 上位机扫描参数「二次下发」入口 + 软复位加严
+- **日期**: 2026-09-25
+- **背景**: 首次配置成功后，`host_config_override_valid` 永不复位，固件因此永远不再进入
+  `STATE_WAIT_HOST_CONFIG`、不再上报 `0x01`；而上位机只在收到 `0x01` 时才下发 139 B
+  扫描参数帧，导致"再次下发新参数"这条链路整体断开（改 yaml + 重启上位机也无效）。
+  同时该标志跨模式粘连，使 raw 模式调过参后切回 Mai2Touch 会沿用上位机参数而非本地档位。
+- **变更**:
+  - `tenodata.h/c`: 新增 `tenodata_clear_host_config_override()`（只清覆盖，不触发重配）与
+    `tenodata_force_host_config_resend()`（清覆盖 + `request_initialization()`，从而重新
+    回到 `STATE_WAIT_HOST_CONFIG` 并上报 `0x01`）
+  - `touch_app.h/c`: `touch_app_apply_config()` 增加 `force_host_config_resend` 形参；
+    **模式切换 (`mode_changed`) 时清除 host 参数覆盖**；新增 `touch_app_force_host_config_resend()`
+  - `App/config/touch_config.c`: Magic touch 新增参数 `0x05 FORCE_RESEND`（载荷 1 字节 `0x01`）；
+    `GET_INFO` 由 7 B 扩为 8 B，末字节为能力位（bit0 = 支持 `0x05`）
+  - `App/touch/psoc_comm.c`: `psoc_comm_soft_reset()` 先做一次状态读刷新 I2C 状态，再**连写两遍
+    `0xAD`**（间隔 2 ms）；PSoC 侧 `Check_Soft_Reset_Command()` 每次调用都会清 EZI2C 活动位，
+    双重写入可保证至少一次被观测到，避免偶发漏检被误判成 legacy 固件而要求断电重启
+  - `App/touch/tenodata.c` 的软复位/legacy 判定逻辑本身未改（`STATE_PREPARE_PSOC` 与
+    `STATE_VERIFY_PSOC_REBOOT` 的重试与判定保持不变）
+- **影响**: 上位机可随时通过 Magic `0x05` 或重新下发 139 B 帧让固件重走
+  「软复位 → 写配置 → 校准 → 重建基线」；raw 模式下参数来源不再跨模式粘连。
+  `0x05` 会清除本地缓存的上位机参数，因此若上位机不在线，重配后将落到固件本地固定档位。
+- **验证**: CMake + Ninja + Arm GNU Toolchain 13.3.rel1 Release 全量构建通过
+  （`text 66056 / data 188 / bss 15656`）
+
+### 节点 9: 寄生电容 Cp 与补偿 IDAC 读取（Magic 只读参数 0x06）
+- **日期**: 2026-09-25
+- **背景**: PSoC 在校准流程里会把两个校准量写进 EZI2C——状态 `0x13` 写 17 通道寄生电容 Cp
+  （偏移 `35`，每通道 2 字节大端），状态 `0x14` 的 SAR 校准（`Tune_CapSense_CompIDAC_SAR()`，
+  按目标 raw 百分比调整补偿 IDAC）之后写 17 通道补偿 IDAC（偏移 `69`，每通道 1 字节）。
+  但 STM32 的读取长度硬编码为 35 字节（只读 Status + Raw），这两段从未被读取，
+  上位机自然看不到。
+- **变更**:
+  - `App/touch/psoc_comm.h/c`: 新增 `PSOC_EZI2C_OFFSET_CP = 0x23`(35)、
+    `PSOC_EZI2C_OFFSET_COMP_IDAC = 0x45`(69)、`PSOC_COMM_CP_LENGTH = 34`、
+    `PSOC_COMM_COMP_IDAC_LENGTH = 17`、`PSOC_COMM_CAL_LENGTH = 51`、
+    `PSOC_STATUS_CP_READY = 0x13`、`PSOC_STATUS_COMP_READY = 0x14`；
+    新增 `psoc_comm_read_cal()`（**一次事务读连续 51 字节**并拆成 Cp + 补偿 IDAC），
+    `psoc_comm_read_cp()` 保留为薄封装
+  - `App/touch/tenodata.h/c`: 新增 `cp_raw[2][34]` / `cp_valid[2]` 与
+    `comp_idac[2][17]` / `comp_idac_valid[2]` 快照；`capture_cal_if_ready()` 在
+    `STATE_WAIT_CALIBRATION` 轮询中**按各自写入时机**分别到点读一次
+    （Cp ≥ `0x13`、补偿 IDAC ≥ `0x14`），之后作为静态量缓存；
+    `start_initialization()` 一并清空（重配会重测）；新增 `tenodata_get_cp()` /
+    `tenodata_get_comp_idac()`
+  - `App/touch/touch_app.h/c`: 新增 `touch_app_get_cp()` / `touch_app_get_comp_idac()`
+  - `App/config/touch_config.c`: Magic touch 只读参数 `0x06` 载荷由 68 B 扩为 **102 B**
+    （每片 = Cp 34B + 补偿 IDAC 17B，片内步进 51 B）；`_Static_assert` 同步为 102
+  - `tools/magic_config_tool.py`: `touch cp` 命令同时打印 Cp 与补偿 IDAC
+- **影响**: Cp 与补偿 IDAC 成为可通过 Magic 按需读取的静态量，**不改动触摸数据流**
+  （CDC0 帧格式不变）；上位机据此在密集型表格中显示 `Cp` 与 `Comp` 两列。
+  两者都只在 PSoC 配置/校准时更新，运行时不变。
+- **验证**: Release 全量构建通过；上位机以"按真实 Magic 帧应答 102 B 载荷的伪造串口"
+  完成端到端验证（识别 Debug Port → 读 102 B → 分别解析出 Cp 与 Comp → 读完关闭端口）
+
+### 节点 10: Debug 构建超出 120K FLASH —— Debug 默认优化级别改为 -Og
+- **日期**: 2026-09-25
+- **背景**: STM32CubeIDE 的 **Debug** 配置链接失败：
+  `section '.rodata' will not fit in region 'FLASH'` / `region 'FLASH' overflowed by 1616 bytes`。
+  Release 配置能过，所以之前没暴露。
+- **分析**:
+  - 链接脚本给 FLASH 的是 **120K**（`STM32H503CBTX_FLASH.ld:48`，= 128K 减去最后 8K 配置区），
+    上限 122880 B。
+  - CubeIDE 两个配置的差异只有优化/调试级别：**Release = `-Os -g0`**、**Debug = `-O0 -g3`**
+    （`.cproject` 里 Debug 的 `optimization.level` 为空 → 默认 `-O0`）。
+  - 实测三组数据：
+    | 配置 | .text | .rodata | .data | FLASH 合计 | 余量 |
+    |---|---:|---:|---:|---:|---:|
+    | Release `-Os -g0` | 64256 | 1408 | 188 | 66468 | +56412 |
+    | Debug `-Og -g3` | 76780 | 1436 | 188 | 79020 | +43860 |
+    | Debug `-O0 -g3` | 122236 | 1444 | 192 | **123872** | **−1616** |
+  - 结论：**不是某个新功能写爆了，而是 `-O0` 让全工程代码体积约为 `-Os` 的 1.9 倍**，
+    把 120K 顶掉了约 1.6K（仅超出 1.3%）。`-g3` 的调试段不占 FLASH（非 alloc 段）。
+- **变更**:
+  - `CMakeLists.txt`: 新增缓存变量 `FIRMWARE_DEBUG_OPT`（默认 **`-Og`**），
+    Debug 配置的优化级别由原来的硬编码 `-O0` 改为引用它：
+    `cmake -DCMAKE_BUILD_TYPE=Debug -DFIRMWARE_DEBUG_OPT=-O0` 可恢复完整 `-O0`（会超出 120K）。
+  - CubeIDE 侧需要用户自己在工程属性里把 **Debug 的 Optimization Level 设为 `-Og`**
+    （或 `-Os`）；`.cproject` 是 IDE 管理的文件，未擅自改动。
+- **影响**: Debug 配置恢复可构建（余量约 42.8K）；`-Og` 的 DWARF 仍然是"真实"的
+  （不改变变量存在性），可在该级别下单步调试；`-O0` 会超出 FLASH 约 1.6K。
+- **验证**: CMake + Ninja + Arm GNU Toolchain 13.3.rel1 下 Debug(`-Og`) 链接成功
+  （text 78832 / data 188 / bss 15808）；Release 复核仍为 66468 B。
+
 ---
 
 ## 当前文件结构

@@ -43,6 +43,21 @@ void tenodata_request_reconfigure(void);
 void tenodata_task(void);
 bool tenodata_get_status(TenodataStatusSnapshot *snapshot);
 
+/* 清除"上位机扫描参数覆盖"标记 (不触发重配)。
+ * 清除后处于 raw 模式时, 下一次完整初始化会重新上报 0x01 索要参数。 */
+void tenodata_clear_host_config_override(void);
+
+/* 强制上位机重新下发扫描参数: 清覆盖 + 重走初始化, 重新上报 0x01。 */
+void tenodata_force_host_config_resend(void);
+
+/* 读取指定片的寄生电容 Cp 原始字节 (17 通道 × 2 字节大端)。
+ * 返回 false 表示该片当前没有有效的 Cp 快照 (未校准成功/已重配)。 */
+bool tenodata_get_cp(uint8_t device_index, uint8_t *cp_out);
+
+/* 读取指定片的补偿 IDAC (17 通道 × 1 字节)。
+ * PSoC 在 SAR 校准中按目标 raw 百分比调整该值, 与 Cp 同时抓取。 */
+bool tenodata_get_comp_idac(uint8_t device_index, uint8_t *comp_out);
+
 #ifdef __cplusplus
 }
 #endif

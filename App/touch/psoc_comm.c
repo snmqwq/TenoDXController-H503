@@ -221,6 +221,8 @@ uint8_t psoc_comm_write_config_mask(const uint8_t *config_payload_136,
 bool psoc_comm_soft_reset(uint8_t device_index)
 {
     uint8_t soft_reset_cmd = PSOC_COMMAND_SOFT_RESET;
+    uint8_t status_sink = 0U;
+    bool ok;
 
     if ((device_index >= PSOC_COMM_DEVICE_COUNT) ||
         !devices[device_index].connected)
@@ -228,13 +230,38 @@ bool psoc_comm_soft_reset(uint8_t device_index)
         return false;
     }
 
-    return HAL_I2C_Mem_Write(&hi2c1,
-                             devices[device_index].address << 1,
-                             PSOC_EZI2C_OFFSET_STATUS,
-                             I2C_MEMADD_SIZE_8BIT,
-                             &soft_reset_cmd,
-                             1,
-                             10) == HAL_OK;
+    /* 先做一次状态读: 顺带刷新 I2C 状态, 让随后的 0xAD 落在一次
+     * "干净"的事务序列里。 */
+    (void)psoc_comm_read_status(device_index, &status_sink);
+
+    ok = (HAL_I2C_Mem_Write(&hi2c1,
+                            devices[device_index].address << 1,
+                            PSOC_EZI2C_OFFSET_STATUS,
+                            I2C_MEMADD_SIZE_8BIT,
+                            &soft_reset_cmd,
+                            1,
+                            10) == HAL_OK);
+
+    if (!ok)
+    {
+        return false;
+    }
+
+    /* PSoC 侧在运行循环中以约 10us 的间隔调用
+     * Check_Soft_Reset_Command(), 它每次都会消费掉 EZI2C 的活动位。
+     * 连写两遍 0xAD 可以保证其中一次必定被观测到, 避免偶发漏检后
+     * 被误判成"不支持软复位的老固件"而要求断电重启。 */
+    HAL_Delay(2);
+
+    (void)HAL_I2C_Mem_Write(&hi2c1,
+                            devices[device_index].address << 1,
+                            PSOC_EZI2C_OFFSET_STATUS,
+                            I2C_MEMADD_SIZE_8BIT,
+                            &soft_reset_cmd,
+                            1,
+                            10);
+
+    return true;
 }
 
 uint8_t psoc_comm_soft_reset_all(void)
@@ -264,6 +291,48 @@ bool psoc_comm_read_status(uint8_t device_index, uint8_t *status_out)
     return HAL_I2C_Mem_Read(&hi2c1, devices[device_index].address << 1,
                             PSOC_EZI2C_OFFSET_STATUS, I2C_MEMADD_SIZE_8BIT,
                             status_out, 1, 10) == HAL_OK;
+}
+
+bool psoc_comm_read_cp(uint8_t device_index, uint8_t *cp_out)
+{
+    uint8_t comp_sink[PSOC_COMM_COMP_IDAC_LENGTH];
+
+    return psoc_comm_read_cal(device_index, cp_out, comp_sink);
+}
+
+bool psoc_comm_read_cal(uint8_t device_index,
+                        uint8_t *cp_out,
+                        uint8_t *comp_out)
+{
+    uint8_t block[PSOC_COMM_CAL_LENGTH];
+
+    if ((device_index >= PSOC_COMM_DEVICE_COUNT) ||
+        (cp_out == NULL) ||
+        (comp_out == NULL) ||
+        !devices[device_index].connected)
+    {
+        return false;
+    }
+
+    /* Cp(35..68) 与补偿 IDAC(69..85) 在 EZI2C 里连续, 一次事务读完。
+     * 只在校准流程 (PSoC 状态 0x13 之后) 读得到有效值;
+     * 提前读会拿到软复位后尚未写入的 0。调用方负责判断时机。 */
+    if (HAL_I2C_Mem_Read(&hi2c1,
+                         devices[device_index].address << 1,
+                         PSOC_EZI2C_OFFSET_CP,
+                         I2C_MEMADD_SIZE_8BIT,
+                         block,
+                         PSOC_COMM_CAL_LENGTH,
+                         10) != HAL_OK)
+    {
+        return false;
+    }
+
+    memcpy(cp_out, block, PSOC_COMM_CP_LENGTH);
+    memcpy(comp_out,
+           &block[PSOC_COMM_CP_LENGTH],
+           PSOC_COMM_COMP_IDAC_LENGTH);
+    return true;
 }
 
 bool psoc_comm_is_bus_ready(void)

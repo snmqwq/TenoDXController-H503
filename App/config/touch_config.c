@@ -9,12 +9,25 @@
 
 #include "flash_config.h"
 #include "magic_config.h"
+#include "touch/psoc_comm.h"
 #include "touch/touch_app.h"
 
 #define TOUCH_PARAM_CHANNEL_MAPPING       0x01U
 #define TOUCH_PARAM_CDC_MODE              0x02U
 #define TOUCH_PARAM_CHANNEL_BATCH         0x03U
 #define TOUCH_PARAM_PSOC_STATUS           0x04U
+#define TOUCH_PARAM_FORCE_RESEND          0x05U
+#define TOUCH_PARAM_CP                    0x06U
+
+/* 0x05 写入载荷: 1 字节, 非 0 表示强制上位机重新下发扫描参数 */
+#define TOUCH_FORCE_RESEND_TRIGGER        0x01U
+
+/* 0x06 读取载荷: 每片 = Cp(17ch × 2B 大端) + 补偿 IDAC(17ch × 1B) */
+#define TOUCH_CP_DEVICE_LENGTH            (PSOC_COMM_CP_LENGTH)
+#define TOUCH_CP_DEVICE_STRIDE \
+    (PSOC_COMM_CP_LENGTH + PSOC_COMM_COMP_IDAC_LENGTH)
+#define TOUCH_CP_PAYLOAD_LENGTH \
+    (TENODATA_STATUS_DEVICE_COUNT * TOUCH_CP_DEVICE_STRIDE)
 
 #define TOUCH_CDC_MODE_RAW                0U
 #define TOUCH_CDC_MODE_MAI2TOUCH          1U
@@ -48,6 +61,8 @@ _Static_assert(sizeof(touch_config_payload_t) == 70U,
                "Touch all/Flash payload must be 70 bytes");
 _Static_assert(TOUCH_STATUS_PAYLOAD_LENGTH == 16U,
                "Touch status payload must be 16 bytes");
+_Static_assert(TOUCH_CP_PAYLOAD_LENGTH == 102U,
+               "Touch Cp payload must be 102 bytes (2 devices x (34B Cp + 17B comp))");
 
 /* Magic callbacks run synchronously from the main loop, so shared work
  * buffers avoid placing several mapping objects on the MCU stack.
@@ -71,7 +86,8 @@ static uint8_t current_cdc_mode(void)
 }
 
 static bool touch_config_apply(TenodataChannelMapping const *mapping,
-                               uint8_t cdc_mode)
+                               uint8_t cdc_mode,
+                               bool force_resend)
 {
     if (!cdc_mode_is_valid(cdc_mode))
     {
@@ -81,7 +97,8 @@ static bool touch_config_apply(TenodataChannelMapping const *mapping,
     return touch_app_apply_config(
         mapping,
         TENODATA_TOTAL_CHANNELS,
-        cdc_mode == TOUCH_CDC_MODE_MAI2TOUCH);
+        cdc_mode == TOUCH_CDC_MODE_MAI2TOUCH,
+        force_resend);
 }
 
 static bool touch_config_build_payload(touch_config_payload_t *payload)
@@ -108,7 +125,7 @@ static bool touch_config_apply_payload(touch_config_payload_t const *payload)
     }
 
     memcpy(mapping_buffer, payload->mapping, sizeof(mapping_buffer));
-    return touch_config_apply(mapping_buffer, payload->cdc_mode);
+    return touch_config_apply(mapping_buffer, payload->cdc_mode, false);
 }
 
 static bool touch_config_load_from_flash(void)
@@ -230,6 +247,33 @@ static bool touch_magic_read(uint8_t param,
             return true;
         }
 
+        case TOUCH_PARAM_CP:
+        {
+            /* 每片: Cp 34 字节 (17 通道 × 2 字节大端) + 补偿 IDAC 17 字节。
+             * 无效片 (未校准成功/刚重配) 整片填 0, 上位机会显示为 "-",
+             * 因此参数整体只要长度够就返回成功。 */
+            if (max_length < TOUCH_CP_PAYLOAD_LENGTH)
+            {
+                return false;
+            }
+
+            memset(data, 0, TOUCH_CP_PAYLOAD_LENGTH);
+
+            for (uint8_t index = 0U;
+                 index < TENODATA_STATUS_DEVICE_COUNT;
+                 index++)
+            {
+                uint8_t *slot = &data[index * TOUCH_CP_DEVICE_STRIDE];
+
+                (void)touch_app_get_cp(index, slot);
+                (void)touch_app_get_comp_idac(
+                    index, &slot[TOUCH_CP_DEVICE_LENGTH]);
+            }
+
+            *out_length = TOUCH_CP_PAYLOAD_LENGTH;
+            return true;
+        }
+
         default:
             return false;
     }
@@ -243,7 +287,7 @@ static bool touch_magic_write_mapping(uint8_t const *data, uint8_t length)
     }
 
     memcpy(mapping_buffer, data, sizeof(mapping_buffer));
-    return touch_config_apply(mapping_buffer, current_cdc_mode());
+    return touch_config_apply(mapping_buffer, current_cdc_mode(), false);
 }
 
 static bool touch_magic_write_batch(uint8_t const *data, uint8_t length)
@@ -288,7 +332,7 @@ static bool touch_magic_write_batch(uint8_t const *data, uint8_t length)
                sizeof(TenodataChannelMapping));
     }
 
-    return touch_config_apply(mapping_buffer, current_cdc_mode());
+    return touch_config_apply(mapping_buffer, current_cdc_mode(), false);
 }
 
 static bool touch_magic_write_mode(uint8_t mode)
@@ -299,7 +343,21 @@ static bool touch_magic_write_mode(uint8_t mode)
         return false;
     }
 
-    return touch_config_apply(mapping_buffer, mode);
+    return touch_config_apply(mapping_buffer, mode, false);
+}
+
+/* 0x05: 清掉本地缓存的上位机扫描参数覆盖, 并重走初始化流程,
+ * 使固件重新上报 0x01 向上位机索要参数帧。 */
+static bool touch_magic_write_force_resend(uint8_t const *data, uint8_t length)
+{
+    if ((data == NULL) || (length != 1U) ||
+        (data[0] != TOUCH_FORCE_RESEND_TRIGGER))
+    {
+        return false;
+    }
+
+    touch_app_force_host_config_resend();
+    return true;
 }
 
 static bool touch_magic_write(uint8_t param,
@@ -324,6 +382,9 @@ static bool touch_magic_write(uint8_t param,
         case TOUCH_PARAM_CHANNEL_BATCH:
             return touch_magic_write_batch(data, length);
 
+        case TOUCH_PARAM_FORCE_RESEND:
+            return touch_magic_write_force_resend(data, length);
+
         default:
             return false;
     }
@@ -344,7 +405,7 @@ static bool touch_magic_load_default(uint8_t param)
         return false;
     }
 
-    return touch_config_apply(mapping_buffer, TOUCH_CDC_MODE_MAI2TOUCH);
+    return touch_config_apply(mapping_buffer, TOUCH_CDC_MODE_MAI2TOUCH, false);
 }
 
 static bool touch_magic_info(uint8_t param,
@@ -370,7 +431,7 @@ static bool touch_magic_info(uint8_t param,
         return true;
     }
 
-    if ((param != 0U) || (max_length < 7U))
+    if ((param != 0U) || (max_length < 10U))
     {
         return false;
     }
@@ -382,7 +443,12 @@ static bool touch_magic_info(uint8_t param,
     data[4] = sizeof(TenodataChannelMapping);
     data[5] = TOUCH_BATCH_RECORD_LENGTH;
     data[6] = TOUCH_PAYLOAD_VERSION;
-    *out_length = 7U;
+    /* 能力位: bit0 = 支持 0x05 强制重新下发扫描参数 */
+    data[7] = 0x01U;
+    /* 只读参数 */
+    data[8] = TOUCH_PARAM_PSOC_STATUS;
+    data[9] = TOUCH_PARAM_CP;
+    *out_length = 10U;
     return true;
 }
 

@@ -20,7 +20,7 @@
 | 功能 | 外设与引脚 | 用途 |
 | --- | --- | --- |
 | MCU | STM32H503CBT6 | 主控制器 |
-| USB | TinyUSB Device | 3 CDC + 1 HID keyboard |
+| USB | TinyUSB Device | 4 CDC + 1 HID keyboard |
 | I2C1 | PB7 SDA / PB8 SCL | PSoC 触摸从机 `0x08`、`0x09` |
 | USART2 | PB4 TX / PB5 RX，115200 8N1 | PN532 |
 | USART1 | PA9 TX / PA10 RX，115200 8N1 | 调试串口，默认无输出 |
@@ -34,7 +34,8 @@ USB 标识为 VID `0xCAFE`、PID `0x4313`，产品名为 `TenoDX Controller`。
 | --- | --- | --- |
 | CDC0 | TenoDX Touch Port | 双 PSoC 触摸数据 |
 | CDC1 | TenoDX LED Port | Mai2LED 灯光协议 |
-| CDC2 | TenoDX Aime Port | Aime 主机协议与 Magic 配置协议 |
+| CDC2 | TenoDX Aime Port | Aime 主机协议 |
+| CDC3 | TenoDX Debug Port | Magic 配置协议 |
 | HID0 | Keyboard | 12KRO 键盘报告 |
 
 ## 按键与键盘
@@ -109,14 +110,14 @@ CDC0 帧固定为 70 字节：
 - PN532 使用 USART2 通信。
 - 支持 FeliCa IDm 读取。
 - 支持 MIFARE 验证及 Block 2 读取。
-- Aime 主机协议与 Magic 配置协议共用 CDC2，并由接收分流和发送队列避免响应交错。
+- Aime 主机协议独占 CDC2，不再接收或响应 Magic 配置命令。
 - USART1 调试由 `PN532_UART_DEBUG_ENABLED` 控制，默认关闭。
 
 相关参考资料保存在 `ref/Aime/`。
 
 ## Magic 配置
 
-Magic 协议通过 CDC2 通信，固定前导序列为：
+Magic 协议通过独立的 CDC3 `TenoDX Debug Port` 通信。该端口只承载 Magic 二进制协议，不输出文本日志。固定前导序列为：
 
 ```text
 91 3E ED 20 7C 99 58 AC
@@ -143,8 +144,14 @@ Touch 模块参数：
 | `0x01` | 读/写 | 68 字节完整映射表；按物理通道顺序排列 34 个 `[region, block]` 记录 |
 | `0x02` | 读/写 | 1 字节 CDC0 模式：`0` 为 PSoC raw，`1` 为 Mai2Touch |
 | `0x03` | 写 | 批量部分更新；每条 3 字节 `[channel, region, block]` |
+| `0x04` | 读 | PSoC 状态快照；`GET_INFO` 回 10 字节能力表（第 8 字节 bit0 = 支持 `0x05`，第 9/10 字节为只读参数 `0x04`/`0x06`） |
+| `0x05` | 写 | 1 字节 `0x01`：清除固件缓存的上位机扫描参数并重走初始化，使 CDC0 重新上报 `0x01`，让上位机重新下发扫描参数帧 |
+| `0x06` | 读 | 校准量快照：102 字节 = 每片 `寄生电容 Cp(17 通道 × 2 字节大端) + 补偿 IDAC(17 通道 × 1 字节)`，片内步进 51 字节；未校准成功的片整片为 0 |
 
 `0x03` 允许一次写入 1–34 个通道，同一批次不得重复指定物理通道。固件会先校验全部记录，再原子应用整批修改，并只触发一次完整重新初始化。Magic 单包载荷上限为 248 字节。
+
+> 扫描参数只在固件上报 `0x01` 时才由上位机下发，而首次配置成功后固件不会再回到该状态。
+> 因此更换扫描参数需要显式触发：Magic `0x05`（配置工具命令 `touch resend`）、切换 CDC0 模式，或由上位机主动重发参数帧。
 
 Touch 的 Flash 及 `ALL` 序列化格式固定为 `[version=2, mode, mapping[68]]`，共 70 字节。`WRITE` 只修改 RAM 配置，执行 `SAVE` 或 `SAVE_ALL` 后才写入 Flash。Aime 和 button 不提供独立的 Magic 配置模块。
 
@@ -168,7 +175,7 @@ python -m pip install -r tools/requirements.txt
 python tools/magic_config_tool.py
 ```
 
-连接时选择 `TenoDX Aime Port`。工具支持触摸映射与输出模式、灯光配置、1P/2P 布局、副按键键值、原始 Magic 请求和系统 DFU。
+连接时选择 `TenoDX Debug Port`。工具支持触摸映射与输出模式、灯光配置、1P/2P 布局、副按键键值、原始 Magic 请求和系统 DFU。
 
 常用触摸命令：
 
@@ -180,9 +187,15 @@ touch set-many 2 A2 3 A2 12 B4
 touch mode
 touch mode mai2touch
 touch save
+touch resend
+touch cp
+touch status
 ```
 
 `touch set` 和 `touch set-many` 为每个通道指定唯一的区域，`block` 自动派生；这些命令修改 RAM，需要再执行 `touch save` 才会持久化。
+`touch resend` 用于让上位机重新下发扫描参数（见上文 `0x05` 说明）。
+`touch cp` 读取两片 PSoC 的寄生电容 Cp 与补偿 IDAC——两者都只在 PSoC 配置/校准时确定
+（Cp 在状态 `0x13`、补偿 IDAC 在 SAR 校准后的状态 `0x14`），需先完成校准才有数据。
 
 常用键盘命令：
 
@@ -240,8 +253,8 @@ cmake --build build/firmware --parallel
 | 路径 | 内容 |
 | --- | --- |
 | `App/` | 应用模块及统一的 `app_init()` / `app_task()` 入口 |
-| `App/aime/` | PN532、Aime 协议及 CDC2 分流 |
-| `App/config/` | Magic 命令及触摸、灯光、键盘配置 |
+| `App/aime/` | PN532、Aime 协议及专用 CDC2 接口 |
+| `App/config/` | Magic 命令、专用 CDC3 Debug 接口及触摸、灯光、键盘配置 |
 | `App/touch/` | PSoC 通信、触摸判定、Mai2Touch、CDC0 路由及统一任务入口 |
 | `App/led/` | Mai2LED 控制 |
 | `App/button/` | 按键扫描与 MultiButton 封装 |

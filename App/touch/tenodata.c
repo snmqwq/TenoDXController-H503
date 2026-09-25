@@ -86,6 +86,15 @@ static uint8_t reset_status2_seen_mask;
 static uint8_t reset_ready_mask;
 static uint8_t calibrated_device_mask;
 static uint8_t calibration_report_status;
+/* 每片 17 通道寄生电容 Cp (原始字节, 每通道 2 字节大端, 与 EZI2C 一致)。
+ * PSoC 只在校准流程的状态 0x13 写一次, 软复位后清零, 因此必须在校准
+ * 进行中抓取; 之后作为静态量缓存, 供 Magic 按需读取。 */
+static uint8_t cp_raw[PSOC_COMM_DEVICE_COUNT][PSOC_COMM_CP_LENGTH];
+static bool cp_valid[PSOC_COMM_DEVICE_COUNT];
+/* 每片 17 通道补偿 IDAC (每通道 1 字节)。PSoC 在状态 0x14 完成 SAR
+ * 校准后写入, 与 Cp 在同一次事务里读出。 */
+static uint8_t comp_idac[PSOC_COMM_DEVICE_COUNT][PSOC_COMM_COMP_IDAC_LENGTH];
+static bool comp_idac_valid[PSOC_COMM_DEVICE_COUNT];
 static uint8_t discovery_candidate_mask;
 static uint8_t locked_discovery_mask;
 static uint8_t read_failure_count[PSOC_COMM_DEVICE_COUNT];
@@ -162,6 +171,50 @@ static void apply_pipeline_device_masks(void)
         pipeline_device_mask,
         (uint8_t)((unavailable_device_mask | recovery_forced_mask) &
                   TENODATA_ALL_DEVICE_MASK));
+}
+
+/* 校准进行中抓取校准量。PSoC 是两个阶段分别写入的:
+ *   状态 0x13 → Cp 区有效 (35..68)
+ *   状态 0x14 → SAR 校准完成, 补偿 IDAC 区有效 (69..85)
+ * 两者在同一次 I2C 事务里返回, 因此各自到点后读一次即可;
+ * 读取的几十微秒抖动在校准窗口内可以忽略。 */
+static void capture_cal_if_ready(uint8_t device_index, uint8_t psoc_status)
+{
+    bool need_cp;
+    bool need_comp;
+
+    if (device_index >= PSOC_COMM_DEVICE_COUNT)
+    {
+        return;
+    }
+
+    need_cp = !cp_valid[device_index] &&
+              (psoc_status >= PSOC_STATUS_CP_READY) &&
+              (psoc_status <= PSOC_STATUS_CALIBRATION_DONE);
+
+    need_comp = !comp_idac_valid[device_index] &&
+                (psoc_status >= PSOC_STATUS_COMP_READY) &&
+                (psoc_status <= PSOC_STATUS_CALIBRATION_DONE);
+
+    if (!need_cp && !need_comp)
+    {
+        return;
+    }
+
+    if (psoc_comm_read_cal(device_index,
+                           cp_raw[device_index],
+                           comp_idac[device_index]))
+    {
+        if (need_cp)
+        {
+            cp_valid[device_index] = true;
+        }
+
+        if (need_comp)
+        {
+            comp_idac_valid[device_index] = true;
+        }
+    }
 }
 
 static void schedule_recovery_backoff(uint8_t device_index, uint32_t now)
@@ -306,6 +359,9 @@ static void start_initialization(uint32_t now)
     reset_ready_mask = 0U;
     calibrated_device_mask = 0U;
     calibration_report_status = PSOC_STATUS_START_CALIBRATION;
+    /* 重配会让 PSoC 重新测量 Cp 并重跑 SAR 校准, 旧快照作废 */
+    memset(cp_valid, 0, sizeof(cp_valid));
+    memset(comp_idac_valid, 0, sizeof(comp_idac_valid));
     active_device = 0U;
     pending_read_device = 0U;
     read_inflight = false;
@@ -701,6 +757,50 @@ void tenodata_request_reconfigure(void)
     request_initialization();
 }
 
+void tenodata_clear_host_config_override(void)
+{
+    /* 只清除"上位机扫描参数覆盖"标记, 不触发重配。
+     * 用于模式切换等场景: 清掉之后, 若仍处于 tenodata(raw) 模式,
+     * 下一次完整初始化会走 STATE_WAIT_HOST_CONFIG 重新向上位机索要参数,
+     * 而不是继续沿用上一次的参数。 */
+    host_config_override_valid = false;
+}
+
+void tenodata_force_host_config_resend(void)
+{
+    /* 强制上位机重新下发扫描参数:
+     * 清掉本地覆盖 + 重走完整初始化, 从而回到 STATE_WAIT_HOST_CONFIG
+     * 并重新上报 0x01 请求配置。 */
+    host_config_override_valid = false;
+    request_initialization();
+}
+
+bool tenodata_get_cp(uint8_t device_index, uint8_t *cp_out)
+{
+    if ((device_index >= PSOC_COMM_DEVICE_COUNT) ||
+        (cp_out == NULL) ||
+        !cp_valid[device_index])
+    {
+        return false;
+    }
+
+    memcpy(cp_out, cp_raw[device_index], PSOC_COMM_CP_LENGTH);
+    return true;
+}
+
+bool tenodata_get_comp_idac(uint8_t device_index, uint8_t *comp_out)
+{
+    if ((device_index >= PSOC_COMM_DEVICE_COUNT) ||
+        (comp_out == NULL) ||
+        !comp_idac_valid[device_index])
+    {
+        return false;
+    }
+
+    memcpy(comp_out, comp_idac[device_index], PSOC_COMM_COMP_IDAC_LENGTH);
+    return true;
+}
+
 TENODATA_SIZE_OPTIMIZED
 void tenodata_task(void)
 {
@@ -1087,6 +1187,9 @@ void tenodata_task(void)
                     read_failure_count[index] = 0U;
                     record_psoc_status(index, psoc_status, now);
                     calibration_report_status = psoc_status;
+
+                    /* 校准进行中顺带抓取 Cp / 补偿 IDAC (各自到点才有效) */
+                    capture_cal_if_ready(index, psoc_status);
 
                     if (psoc_status == PSOC_STATUS_CRASH)
                     {

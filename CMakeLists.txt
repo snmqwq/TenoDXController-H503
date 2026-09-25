@@ -12,6 +12,12 @@ if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
 endif()
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release)
 
+# Debug 默认的优化级别。FLASH 只有 120K（128K 减去最后 8K 配置区），
+# 全工程 -O0 会超出约 1.6K；需要完整 -O0 单步调试时可改成 -O0，
+# 空间紧张时用 -Og（推荐，调试信息仍然准确）或 -Os。
+set(FIRMWARE_DEBUG_OPT "-Og"
+    CACHE STRING "Optimization flags used by the Debug configuration")
+
 # CubeIDE defines the complete Debug/Release flag sets itself. Clear CMake's
 # desktop-oriented defaults (for example -O3 and -DNDEBUG in Release) so the
 # portable build stays aligned with the CubeIDE configurations.
@@ -82,7 +88,7 @@ target_compile_options(${FIRMWARE_NAME} PRIVATE
     -ffunction-sections
     -fdata-sections
     $<$<COMPILE_LANGUAGE:C>:-std=gnu11>
-    $<$<AND:$<COMPILE_LANGUAGE:C>,$<CONFIG:Debug>>:-O0>
+    $<$<AND:$<COMPILE_LANGUAGE:C>,$<CONFIG:Debug>>:${FIRMWARE_DEBUG_OPT}>
     $<$<AND:$<COMPILE_LANGUAGE:C>,$<CONFIG:Debug>>:-g3>
     $<$<AND:$<COMPILE_LANGUAGE:C>,$<CONFIG:Release>>:-Os>
     $<$<AND:$<COMPILE_LANGUAGE:C>,$<CONFIG:Release>>:-g0>

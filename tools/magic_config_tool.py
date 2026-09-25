@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interactive magic-config console using the TenoDX Aime CDC port."""
+"""Interactive magic-config console using the TenoDX Debug CDC port."""
 
 from __future__ import annotations
 
@@ -62,11 +62,15 @@ TOUCH_PARAM_FULL_MAP = 0x01
 TOUCH_PARAM_MODE = 0x02
 TOUCH_PARAM_BATCH_MAP = 0x03
 TOUCH_PARAM_PSOC_STATUS = 0x04
+TOUCH_PARAM_FORCE_RESEND = 0x05
+TOUCH_PARAM_CP = 0x06
+TOUCH_FORCE_RESEND_TRIGGER = 0x01
 TOUCH_STATUS_VERSION = 1
 TOUCH_STATUS_LENGTH = 16
 TOUCH_STATUS_DEVICE_LENGTH = 6
 TOUCH_STATUS_POLL_SECONDS = 0.5
 TOUCH_CHANNEL_COUNT = 34
+TOUCH_CHANNELS_PER_DEVICE = 17
 TOUCH_ZONE_COUNT = 34
 TOUCH_MAP_ENTRY_SIZE = 2
 TOUCH_BATCH_RECORD_SIZE = 1 + TOUCH_MAP_ENTRY_SIZE
@@ -950,6 +954,9 @@ touch 命令:
   touch save                  保存当前 Touch 配置到 Flash
   touch defaults              恢复 Touch 默认配置到 RAM
   touch info                  读取固件暴露的 Touch 参数列表
+  touch resend                清除固件缓存的上位机扫描参数，让 CDC0 重新
+                              上报 0x01，使 TouchHost 重新下发参数帧
+  touch cp                    读取两片 PSoC 的寄生电容 Cp 与补偿 IDAC
   touch status                显示 STM32 与两个 PSoC 的当前状态
   touch watch                 每 500 ms 刷新一次状态，按 Ctrl+C 停止
 
@@ -1311,6 +1318,85 @@ def cmd_touch(client: MagicConfigClient, argv: list[str]) -> None:
         safe_request(client, TOUCH_MODULE, COMMANDS["info"])
         return
 
+    if command in ("resend", "force-resend"):
+        if len(argv) != 1:
+            command_error("touch resend 不接受参数。", "touch")
+            return
+        response = safe_request(
+            client,
+            TOUCH_MODULE,
+            COMMANDS["write"],
+            TOUCH_PARAM_FORCE_RESEND,
+            bytes([TOUCH_FORCE_RESEND_TRIGGER]),
+        )
+        if response and response.ok:
+            print(
+                "已清除固件缓存的上位机扫描参数，并重走初始化；\n"
+                "CDC0 将重新上报 0x01 请求配置，TouchHost 收到后会重新下发参数帧。"
+            )
+        return
+
+    if command == "cp":
+        if len(argv) != 1:
+            command_error("touch cp 不接受参数。", "touch")
+            return
+
+        response = safe_request(
+            client,
+            TOUCH_MODULE,
+            COMMANDS["read"],
+            TOUCH_PARAM_CP,
+        )
+
+        if not response or not response.ok:
+            return
+
+        payload = response.payload
+
+        expected = 2 * (TOUCH_CHANNELS_PER_DEVICE * 2 + TOUCH_CHANNELS_PER_DEVICE)
+
+        if len(payload) != expected:
+            command_error(
+                f"touch cp 载荷长度异常: {len(payload)} 字节 (期望 {expected})",
+                "touch",
+            )
+            return
+
+        stride = TOUCH_CHANNELS_PER_DEVICE * 2 + TOUCH_CHANNELS_PER_DEVICE
+
+        for device in range(2):
+            base = device * stride
+            cp_values = [
+                (payload[base + channel * 2] << 8)
+                | payload[base + channel * 2 + 1]
+                for channel in range(TOUCH_CHANNELS_PER_DEVICE)
+            ]
+            comp_base = base + TOUCH_CHANNELS_PER_DEVICE * 2
+            comp_values = [
+                payload[comp_base + channel]
+                for channel in range(TOUCH_CHANNELS_PER_DEVICE)
+            ]
+
+            psoc = 0x08 + device
+            print(f"PSoC 0x{psoc:02X}:")
+            print(
+                "  Cp   : "
+                + " ".join(
+                    f"{index}:{value}" for index, value in enumerate(cp_values)
+                )
+            )
+            print(
+                "  补偿IDAC: "
+                + " ".join(
+                    f"{index}:{value}" for index, value in enumerate(comp_values)
+                )
+            )
+            print(
+                f"  Cp 合计 {sum(cp_values)} 平均 {sum(cp_values) / len(cp_values):.1f}"
+                f" | 补偿IDAC 合计 {sum(comp_values)}"
+            )
+        return
+
     command_error(f"未知 touch 命令: {argv[0]}", "touch")
 
 
@@ -1370,12 +1456,12 @@ def connect_to_port(port: str, baudrate: int, timeout: float) -> MagicConfigClie
         client.close()
         raise
 
-    print(f"已连接并验证为 TenoDX Aime/Magic 配置端口: {port}")
+    print(f"已连接并验证为 TenoDX Debug/Magic 配置端口: {port}")
     return client
 
 
 def verify_magic_port(client: MagicConfigClient) -> None:
-    """Verify that an open serial port is the firmware's CDC2 Aime/Magic endpoint."""
+    """Verify that an open serial port is the firmware's CDC3 Debug/Magic endpoint."""
     response = client.request(MODULES["light"], COMMANDS["info"])
 
     if not response.ok:
@@ -1392,7 +1478,7 @@ def verify_magic_port(client: MagicConfigClient) -> None:
 
 
 class ConnectionMonitor:
-    """Periodically verify that an open CDC2 Aime/Magic port is still alive."""
+    """Periodically verify that an open CDC3 Debug/Magic port is still alive."""
 
     def __init__(self, client: MagicConfigClient, interval_seconds: float) -> None:
         self.client = client
@@ -1568,7 +1654,7 @@ def connection_loop(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="TenoDX magic-config console for the Aime CDC port."
+        description="TenoDX magic-config console for the Debug CDC port."
     )
     parser.add_argument("-p", "--port", help="默认串口，例如 COM7；启动时仍会列出串口")
     parser.add_argument("--baudrate", type=int, default=115200, help="CDC 波特率占位，默认 115200")
