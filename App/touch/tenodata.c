@@ -20,6 +20,12 @@
 #define TENODATA_PSOC_REBOOT_TIMEOUT_MS  2000U
 #define TENODATA_CALIB_CHECK_PERIOD_MS    100U
 #define TENODATA_CALIBRATION_TIMEOUT_MS  5000U
+/* 校准量 (Cp / 补偿 IDAC) 抓取重试间隔。
+ * 必须允许在状态 0x02 时抓: PSoC 的 0x13/0x14 各只持续几毫秒, 而本状态机
+ * 每 TENODATA_CALIB_CHECK_PERIOD_MS(100ms) 才轮询一次状态, 几乎不可能命中
+ * 中间进度; 0x02 是持久状态, 且这几段数据是 PSoC 初始化时写一次、之后不再
+ * 改动, 所以在 0x02 读到的就是校准结果。 */
+#define TENODATA_CAL_CAPTURE_RETRY_MS     500U
 /* 2ms 轮询: 两片交替 → 每片 ~250Hz (单次 35B 读约 0.9ms, 总线占用 ~45%) */
 #define TENODATA_I2C_POLL_PERIOD_MS         2U
 #define TENODATA_I2C_TRANSACTION_TIMEOUT_MS 30U
@@ -96,6 +102,8 @@ static bool cp_valid[PSOC_COMM_DEVICE_COUNT];
  * 校准后写入, 与 Cp 在同一次事务里读出。 */
 static uint8_t comp_idac[PSOC_COMM_DEVICE_COUNT][PSOC_COMM_COMP_IDAC_LENGTH];
 static bool comp_idac_valid[PSOC_COMM_DEVICE_COUNT];
+/* 校准量补抓的时间戳 (每个设备独立) */
+static uint32_t last_cal_capture_tick[PSOC_COMM_DEVICE_COUNT];
 static uint8_t discovery_candidate_mask;
 static uint8_t locked_discovery_mask;
 static uint8_t read_failure_count[PSOC_COMM_DEVICE_COUNT];
@@ -174,13 +182,18 @@ static void apply_pipeline_device_masks(void)
                   TENODATA_ALL_DEVICE_MASK));
 }
 
-/* 校准进行中抓取校准量。PSoC 是两个阶段分别写入的:
+/* 校准进行中抓取校准量。PSoC 分两个阶段写入:
  *   状态 0x13 → Cp 区有效 (35..68)
  *   状态 0x14 → SAR 校准完成, 补偿 IDAC 区有效 (69..85)
- * 两者在同一次 I2C 事务里返回, 因此各自到点后读一次即可;
- * 读取的几十微秒抖动在校准窗口内可以忽略。 */
+ * 两者在同一次 I2C 事务里返回, 因此各自到点后读一次即可。
+ *
+ * 注意: 本状态机每 100ms 才轮询一次状态, 而 0x13/0x14 只持续几毫秒, 实际上
+ * 几乎不可能命中; 好在 0x02(校准完成) 是持久状态, 而且这几段数据由 PSoC 在
+ * 初始化时写一次、之后不再改动 —— 所以在 0x02 读到的一样是校准结果。
+ * 因此这里把"已校准完成"也算作可读时机, 未抓到时由 RUNNING 定期重试。 */
 static void capture_cal_if_ready(uint8_t device_index, uint8_t psoc_status)
 {
+    bool calibrated = (psoc_status == PSOC_STATUS_CALIBRATION_DONE);
     bool need_cp;
     bool need_comp;
 
@@ -190,12 +203,10 @@ static void capture_cal_if_ready(uint8_t device_index, uint8_t psoc_status)
     }
 
     need_cp = !cp_valid[device_index] &&
-              (psoc_status >= PSOC_STATUS_CP_READY) &&
-              (psoc_status <= PSOC_STATUS_CALIBRATION_DONE);
+              ((psoc_status >= PSOC_STATUS_CP_READY) || calibrated);
 
     need_comp = !comp_idac_valid[device_index] &&
-                (psoc_status >= PSOC_STATUS_COMP_READY) &&
-                (psoc_status <= PSOC_STATUS_CALIBRATION_DONE);
+                ((psoc_status >= PSOC_STATUS_COMP_READY) || calibrated);
 
     if (!need_cp && !need_comp)
     {
@@ -215,6 +226,36 @@ static void capture_cal_if_ready(uint8_t device_index, uint8_t psoc_status)
         {
             comp_idac_valid[device_index] = true;
         }
+    }
+}
+
+/* RUNNING 状态下若校准量还没抓到, 定期补抓一次。
+ * 覆盖"轮询恰好错过 0x13/0x14, 首轮 0x02 时读取又失败"等情况。 */
+static void retry_cal_capture(uint32_t now)
+{
+    for (uint8_t index = 0U; index < PSOC_COMM_DEVICE_COUNT; index++)
+    {
+        uint8_t mask = device_bit(index);
+
+        if ((operational_device_mask & mask) == 0U)
+        {
+            continue;
+        }
+
+        if (cp_valid[index] && comp_idac_valid[index])
+        {
+            continue;
+        }
+
+        if (!elapsed_at_least(now,
+                              last_cal_capture_tick[index],
+                              TENODATA_CAL_CAPTURE_RETRY_MS))
+        {
+            continue;
+        }
+
+        last_cal_capture_tick[index] = now;
+        capture_cal_if_ready(index, (uint8_t)PSOC_STATUS_CALIBRATION_DONE);
     }
 }
 
@@ -363,6 +404,7 @@ static void start_initialization(uint32_t now)
     /* 重配会让 PSoC 重新测量 Cp 并重跑 SAR 校准, 旧快照作废 */
     memset(cp_valid, 0, sizeof(cp_valid));
     memset(comp_idac_valid, 0, sizeof(comp_idac_valid));
+    memset(last_cal_capture_tick, 0, sizeof(last_cal_capture_tick));
     active_device = 0U;
     pending_read_device = 0U;
     read_inflight = false;
@@ -1243,6 +1285,12 @@ void tenodata_task(void)
         {
             bool reprobe_attempted = false;
             bool bus_recovered = false;
+
+            /* 校准量 (Cp / 补偿 IDAC) 若还没抓到, 定期补抓 */
+            if (!read_inflight && psoc_comm_is_bus_ready())
+            {
+                retry_cal_capture(now);
+            }
 
             if (touch_pipeline_is_ready())
             {

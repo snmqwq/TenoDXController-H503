@@ -137,6 +137,34 @@
 - **验证**: CMake + Ninja + Arm GNU Toolchain 13.3.rel1 下 Debug(`-Og`) 链接成功
   （text 78832 / data 188 / bss 15808）；Release 复核仍为 66468 B。
 
+### 节点 11: 修复 Cp / 补偿 IDAC 永远抓不到（改抓 0x02 + RUNNING 定期补抓）
+- **日期**: 2026-09-25
+- **背景**: 上位机读 Magic `0x06` 恒返回 102 字节全 0 。用
+  `TouchHost/tools/magic_probe.py` 实测：固件状态机 = `0x06`(RUNNING)、
+  两片 status 均为 `0x02` 且 flags 正常、`0x06` 长度正确（102）——说明固件版本与
+  协议都对，只是**校准量快照从未被填充**。
+- **分析**: `STATE_WAIT_CALIBRATION` 每 `TENODATA_CALIB_CHECK_PERIOD_MS`(100ms)
+  才轮询一次 PSoC 状态，而 PSoC 的进度是顺序写 `0x13`(Cp 已写) →
+  `0x14`(SAR 校准完 / 补偿 IDAC 已写) → `0x15` → `0x02`，每一级只持续
+  **一条 I2C 写入的时间（几毫秒）**。节点 9 里 `capture_cal_if_ready()` 的条件要求
+  "状态 ≥0x13 且 ≤0x02"，实际**几乎不可能命中那两个中间进度**；
+  而 `0x02` 是持久状态，所以状态机能看到"校准完成"却永远没抓到校准量。
+- **变更** (`App/touch/tenodata.c`):
+  - `capture_cal_if_ready()`：把"状态 == `0x02`（校准完成）"也算作**可读时机**。
+    依据：Cp 区(35..68) 与补偿 IDAC 区(69..85) 由 PSoC 在初始化时写一次、
+    运行中不再改动，`0xAD` 软复位才清零，所以 `0x02` 读到的一样是本次校准结果。
+  - 新增 `retry_cal_capture()` + `last_cal_capture_tick[]`：RUNNING 状态下若某片快照
+    仍无效，**每 `TENODATA_CAL_CAPTURE_RETRY_MS`(500ms) 补抓一次**
+    （仅在总线空闲且无在途读时执行，不干扰 2ms 的 I2C 轮询节奏）。
+  - `start_initialization()` 一并清 `last_cal_capture_tick`。
+- **影响**: 每次校准后都能可靠抓到 Cp / 补偿 IDAC；上位机可**随时重复读取**
+  （不再出现"只能读一次、要重开软件"的现象）。
+- **验证**: 重新烧录后实测 `0x06` 连续 5 次读取全部成功（每次 34 个非零字节、
+  两片 `valid=[True,True]`，耗时 2~6ms）；Cp 实测每通道 3~6。
+- **注意**: 本次实测**补偿 IDAC 全为 0**，而 Cp 有值。上位机显示逻辑已就绪，
+  一旦 PSoC 写出非零补偿值即会显示；若确认应当非零，需另查 PSoC 侧的
+  `Tune_CapSense_CompIDAC_SAR()`（属 `PSoC Creator/` 内容，本次未改动）。
+
 ---
 
 ## 当前文件结构
