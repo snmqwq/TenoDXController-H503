@@ -7,9 +7,11 @@
 #include "kb/keyboard_app.h"
 #include "magic_config.h"
 
-#define KEYBOARD_FLASH_VERSION              3U
+#define KEYBOARD_FLASH_VERSION              4U
+#define KEYBOARD_FLASH_VERSION_3            3U
 #define KEYBOARD_FLASH_LEGACY_VERSION       2U
-#define KEYBOARD_PAYLOAD_VERSION            2U
+#define KEYBOARD_PAYLOAD_VERSION            3U
+#define KEYBOARD_PAYLOAD_VERSION_2          2U
 #define KEYBOARD_PAYLOAD_LEGACY_VERSION     1U
 #define KEYBOARD_PARAM_CONFIG_KEYS          0x80U
 #define KEYBOARD_PARAM_MAIN_LAYOUT          0x81U
@@ -121,6 +123,29 @@ static bool keyboard_config_load_from_flash(void)
         keyboard_flash_config_t config;
 
         memcpy(&config, raw_config, sizeof(config));
+
+        if ((config.version != KEYBOARD_FLASH_VERSION) &&
+            (config.version != KEYBOARD_FLASH_VERSION_3))
+        {
+            return false;
+        }
+
+        if ((config.first_key != KEYBOARD_APP_CONFIG_KEY_FIRST) ||
+            (config.key_count != KEYBOARD_APP_CONFIG_KEY_COUNT))
+        {
+            return false;
+        }
+
+        /*
+         * v3 stored the old four-key defaults. Re-apply the corrected
+         * BTN8..BTN11 map once, so a board that already had Flash written
+         * does not keep the wrong HID/IO semantics.
+         */
+        if (config.version == KEYBOARD_FLASH_VERSION_3)
+        {
+            keyboard_app_reset_keycodes();
+            return true;
+        }
 
         if ((config.version != KEYBOARD_FLASH_VERSION) ||
             (config.first_key != KEYBOARD_APP_CONFIG_KEY_FIRST) ||
@@ -346,8 +371,13 @@ static bool keyboard_magic_write_all(uint8_t const *data, uint8_t length)
 
         memcpy(&payload, data, sizeof(payload));
 
-        if ((payload.version != KEYBOARD_PAYLOAD_VERSION) ||
-            (payload.first_key != KEYBOARD_APP_CONFIG_KEY_FIRST) ||
+        if ((payload.version != KEYBOARD_PAYLOAD_VERSION) &&
+            (payload.version != KEYBOARD_PAYLOAD_VERSION_2))
+        {
+            return false;
+        }
+
+        if ((payload.first_key != KEYBOARD_APP_CONFIG_KEY_FIRST) ||
             (payload.key_count != KEYBOARD_APP_CONFIG_KEY_COUNT))
         {
             return false;

@@ -5,6 +5,7 @@
 #include "led_config.h"
 #include "magic_config.h"
 #include "touch_config.h"
+#include "usb_control.h"
 
 bool config_app_init(void)
 {
@@ -17,6 +18,7 @@ bool config_app_init(void)
     keyboard_ok = keyboard_config_init();
     led_ok = led_config_init();
     debug_cdc_init();
+    usb_control_init();
 
     return touch_ok && keyboard_ok && led_ok;
 }
@@ -25,4 +27,5 @@ void config_app_task(void)
 {
     debug_cdc_task();
     magic_config_task();
+    usb_control_task();
 }

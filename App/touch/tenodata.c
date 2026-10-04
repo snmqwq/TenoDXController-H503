@@ -1,6 +1,7 @@
 #include "tenodata.h"
 
 #include "cdc_manager.h"
+#include "io_mode.h"
 #include "main.h"
 #include "psoc_comm.h"
 #include "tenodata_config.h"
@@ -12,6 +13,7 @@
 
 #define TENODATA_CDC_FRAME_LENGTH          70U
 #define TENODATA_CDC_PERIOD_MS              2U
+#define TENODATA_PIPELINE_BATCH_PACKETS    32U
 #define TENODATA_PROBE_PERIOD_MS           50U
 #define TENODATA_SINGLE_DEVICE_WAIT_MS    500U
 #define TENODATA_REPROBE_PERIOD_MS        500U
@@ -124,6 +126,9 @@ static uint8_t soft_reset_supported_mask;
 static uint8_t legacy_firmware_mask;
 static uint8_t power_cycle_required_mask;
 static uint8_t firmware_detection_pending_mask;
+static uint8_t pipeline_batch[TENODATA_PIPELINE_BATCH_PACKETS *
+                              TOUCH_PIPELINE_PACKET_BYTES];
+static uint16_t pipeline_batch_count;
 static uint32_t next_cdc_tick;
 static uint32_t last_probe_tick;
 static uint32_t discovery_candidate_tick;
@@ -446,6 +451,7 @@ static void start_initialization(uint32_t now)
     reset_ready_mask = 0U;
     calibrated_device_mask = 0U;
     calibration_report_status = PSOC_STATUS_START_CALIBRATION;
+    pipeline_batch_count = 0U;
     /* 重配会让 PSoC 重新测量 Cp 并重跑 SAR 校准, 旧快照作废 */
     memset(cp_valid, 0, sizeof(cp_valid));
     memset(comp_idac_valid, 0, sizeof(comp_idac_valid));
@@ -754,6 +760,15 @@ static void consume_host_config_frame(void)
 
         (void)cdc_manager_rx_read(&byte, 1U);
 
+        if (io_mode_consume_rx_byte(byte))
+        {
+            continue;
+        }
+        if (io_mode_is_enabled())
+        {
+            return;
+        }
+
         /* 喂给模式识别器: 收到 `{` 会自动切到 Mai2Touch 流程 */
         touch_mode_observe_byte(byte);
 
@@ -926,7 +941,7 @@ void tenodata_task(void)
 {
     uint32_t now = HAL_GetTick();
 
-    /* mai2touch 模式独占 CDC RX, 只有 tenodata 模式消费扫描参数帧 */
+    /* mai2touch 模式独占 CDC RX; raw/IO 共用一个接收分发器 */
     if (!cdc_manager_is_mai2touch_active())
     {
         consume_host_config_frame();
@@ -1421,9 +1436,26 @@ void tenodata_task(void)
                         (device != NULL) &&
                         device->connected &&
                         (device->raw[0] ==
-                         PSOC_STATUS_CALIBRATION_DONE))
+                         PSOC_STATUS_CALIBRATION_DONE) &&
+                        (pipeline_batch_count <
+                         TENODATA_PIPELINE_BATCH_PACKETS))
                     {
-                        touch_pipeline_feed(completed_device, device->raw);
+                        uint8_t *packet =
+                            &pipeline_batch[
+                                pipeline_batch_count *
+                                TOUCH_PIPELINE_PACKET_BYTES];
+
+                        memset(packet,
+                               0,
+                               TOUCH_PIPELINE_PACKET_BYTES);
+                        packet[0] = (uint8_t)(1U << completed_device);
+                        memcpy(packet +
+                                   TOUCH_PIPELINE_PACKET_MASK_BYTES +
+                                   ((size_t)completed_device *
+                                    PSOC_COMM_PAYLOAD_LENGTH),
+                               &device->raw[1],
+                               PSOC_COMM_PAYLOAD_LENGTH);
+                        pipeline_batch_count++;
                     }
                 }
                 else
@@ -1530,6 +1562,20 @@ void tenodata_task(void)
         switch (state)
         {
             case STATE_RUNNING:
+                if (cdc_manager_is_mai2touch_active())
+                {
+                    if (pipeline_batch_count > 0U)
+                    {
+                        touch_pipeline_commit_batch(
+                            pipeline_batch,
+                            pipeline_batch_count);
+                        pipeline_batch_count = 0U;
+                    }
+                    else
+                    {
+                        touch_pipeline_commit_packet(NULL);
+                    }
+                }
                 cdc_send_frame(0x00U);
                 break;
 

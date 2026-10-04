@@ -44,8 +44,9 @@ void touch_pipeline_set_device_masks(uint8_t connected_mask, uint8_t forced_mask
     (void)connected_mask; (void)forced_mask;
 }
 bool touch_pipeline_is_ready(void) { return g_pipeline_ready; }
-void touch_pipeline_feed(int psoc_index, const uint8_t *raw_35) {
-    (void)psoc_index; (void)raw_35;
+void touch_pipeline_commit_packet(const uint8_t *packet) { (void)packet; }
+void touch_pipeline_commit_batch(const uint8_t *packets, uint16_t packet_count) {
+    (void)packets; (void)packet_count;
 }
 
 /* ---------- tenodata stub (只 stub touch_mode 用到的两个) ---------- */

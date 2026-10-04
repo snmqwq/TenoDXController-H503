@@ -33,6 +33,7 @@ bool keyboard_app_set_config_keycodes(uint8_t const *data, uint8_t length);
 bool keyboard_app_get_main_layout(keyboard_app_main_layout_t *out_layout);
 bool keyboard_app_set_main_layout(keyboard_app_main_layout_t layout);
 void keyboard_app_reset_keycodes(void);
+void keyboard_app_set_io_mode(bool enabled);
 
 #ifdef __cplusplus
 }

@@ -28,7 +28,7 @@ Mai2Touch 的 34 个触摸区域，并测试 Arduino-Aime-Reader 兼容读卡器
 - 八个灯块显示当前发送的颜色。
 - 支持自定义 RGB、RGBW 四色、逐灯追踪、目标色→黑色→目标色淡入淡出和停止。
 
-1P 与 2P 的主键映射直接取自 `Core/Src/app_config.c`：
+1P 与 2P 的主键映射取自 `App/kb/keyboard_app.c` 与 `App/config/keyboard_config.c`：
 
 | 按键 | 1P | 2P |
 | --- | --- | --- |

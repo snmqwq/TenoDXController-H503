@@ -7,10 +7,15 @@
  * touch_mode 依收到的帧特征决定; 这里先按 raw 待机,
  * 这样没接游戏时上位机的调试链路可以直接用。 */
 static cdc_mode_t current_mode = CDC_MODE_AUTO_RAW;
+static cdc_mode_t mode_before_io = CDC_MODE_AUTO_RAW;
 
 // ================= 路由开关 =================
 
 void cdc_manager_set_mai2touch_active(bool active) {
+    if (cdc_manager_is_io_mode()) {
+        return;
+    }
+
     /* 兼容旧接口 + 保持自动识别的语义:
      *   · 与当前工作模式一致 -> 保持自动模式 (touch_app_apply_config 会在
      *     每次配置变更时按"当前模式"调用本函数, 若无条件变成强制模式,
@@ -27,13 +32,39 @@ void cdc_manager_set_mai2touch_active(bool active) {
 }
 
 bool cdc_manager_is_mai2touch_active(void) {
+    if (current_mode == CDC_MODE_IO) {
+        return false;
+    }
+
     return (current_mode == CDC_MODE_AUTO_MAI2TOUCH) ||
            (current_mode == CDC_MODE_FORCED_MAI2TOUCH);
 }
 
 bool cdc_manager_is_auto_mode(void) {
+    if (current_mode == CDC_MODE_IO) {
+        return false;
+    }
+
     return (current_mode == CDC_MODE_AUTO_RAW) ||
            (current_mode == CDC_MODE_AUTO_MAI2TOUCH);
+}
+
+bool cdc_manager_is_io_mode(void) {
+    return current_mode == CDC_MODE_IO;
+}
+
+void cdc_manager_set_io_mode(bool enabled) {
+    if (enabled) {
+        if (current_mode != CDC_MODE_IO) {
+            mode_before_io = current_mode;
+            current_mode = CDC_MODE_IO;
+        }
+        return;
+    }
+
+    if (current_mode == CDC_MODE_IO) {
+        current_mode = mode_before_io;
+    }
 }
 
 cdc_mode_t cdc_manager_get_mode(void) {
@@ -42,7 +73,7 @@ cdc_mode_t cdc_manager_get_mode(void) {
 
 void cdc_manager_set_auto_detected(bool mai2touch) {
     /* 只有自动模式才允许被识别结果改写, Magic 的强制设定优先 */
-    if (!cdc_manager_is_auto_mode()) {
+    if (cdc_manager_is_io_mode() || !cdc_manager_is_auto_mode()) {
         return;
     }
 
@@ -51,11 +82,19 @@ void cdc_manager_set_auto_detected(bool mai2touch) {
 }
 
 void cdc_manager_set_auto_mode(bool mai2touch) {
+    if (cdc_manager_is_io_mode()) {
+        return;
+    }
+
     current_mode = mai2touch ? CDC_MODE_AUTO_MAI2TOUCH
                              : CDC_MODE_AUTO_RAW;
 }
 
 void cdc_manager_force_mode(bool mai2touch) {
+    if (cdc_manager_is_io_mode()) {
+        return;
+    }
+
     /* 无条件强制 (Magic 显式写入 0/1 时调用):
      * 即使当前输出侧本来就在这一侧, 也要把"强制"标记立起来,
      * 否则自动识别仍然会把模式带走。 */
@@ -72,12 +111,30 @@ void cdc_manager_init(void) {
 // ================= 发送 =================
 
 bool cdc_manager_try_send(bool from_mai2touch, const uint8_t *data, uint16_t len) {
-    // 路由检查：仅活跃模块的发送请求被放行
-    if (from_mai2touch != cdc_manager_is_mai2touch_active()) {
+    // 路由检查：IO 模式独占 CDC0; 其余模式按 raw/Mai2Touch 二选一
+    if (cdc_manager_is_io_mode()) {
+        return false;
+    } else if (from_mai2touch != cdc_manager_is_mai2touch_active()) {
         return false;  // 被屏蔽
     }
 
     // 硬件检查
+    if (!tud_cdc_n_ready(CDC_MANAGER_ITF)) return false;
+    if (tud_cdc_n_write_available(CDC_MANAGER_ITF) < len) return false;
+
+    uint32_t written = tud_cdc_n_write(CDC_MANAGER_ITF, data, len);
+    if (written == len) {
+        tud_cdc_n_write_flush(CDC_MANAGER_ITF);
+        return true;
+    }
+    return false;
+}
+
+bool cdc_manager_try_send_io(const uint8_t *data, uint16_t len) {
+    if (!cdc_manager_is_io_mode()) {
+        return false;
+    }
+
     if (!tud_cdc_n_ready(CDC_MANAGER_ITF)) return false;
     if (tud_cdc_n_write_available(CDC_MANAGER_ITF) < len) return false;
 

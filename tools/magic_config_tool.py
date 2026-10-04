@@ -40,6 +40,8 @@ COMMANDS = {
     "save-all": 0x83,
     "enter-dfu": 0x84,
     "dfu": 0x84,
+    "usb-reconnect": 0x85,
+    "reconnect": 0x85,
 }
 
 STATUS_TEXT = {
@@ -134,6 +136,8 @@ GLOBAL_MODULE = 0x00
 GLOBAL_PARAM_ALL = 0x00
 GLOBAL_CMD_ENTER_DFU = 0x84
 GLOBAL_DFU_CONFIRM = 0xA5
+GLOBAL_CMD_USB_RECONNECT = 0x85
+GLOBAL_RECONNECT_CONFIRM = 0xA5
 
 KEYBOARD_CONFIG_KEY_FIRST = 8
 KEYBOARD_CONFIG_KEY_COUNT = 4
@@ -881,6 +885,7 @@ def print_general_help() -> None:
   keyboard <command> [args]   键盘配置
   touch <command> [args]      触摸通道映射和协议输出模式配置
   dfu enter                   进入 DFU
+  usb reconnect               让固件执行一次 USB 断开/重连
   raw <module> <cmd> <param> [payload bytes...]
   exit                        断开当前串口并返回串口连接层
 
@@ -895,6 +900,7 @@ def print_general_help() -> None:
   touch set 0 A1
   touch set-many 0 A1 1 A1
   touch mode mai2touch
+  usb reconnect
   raw light read 0x01
 """.strip()
     )
@@ -1010,13 +1016,15 @@ module:
   global, touch, light, keyboard，或 0x00..0xFF
 
 command:
-  read, write, save, defaults, info, read-all, write-all, save-all, enter-dfu
+  read, write, save, defaults, info, read-all, write-all, save-all, enter-dfu,
+  usb-reconnect
   或 0x00..0xFF
 
 示例:
   raw light read 0x01
   raw keyboard write 8 0x04
   raw global enter-dfu 0 0xA5
+  raw global usb-reconnect 0 0xA5
 """.strip()
     )
 
@@ -1446,6 +1454,40 @@ def cmd_dfu(client: MagicConfigClient, argv: list[str]) -> None:
         print("DFU 命令未被当前固件接受。")
 
 
+def cmd_usb(client: MagicConfigClient, argv: list[str]) -> None:
+    if not argv or argv[0].lower() in ("help", "-h", "--help"):
+        print(
+            """
+usb 命令:
+  usb reconnect               让固件执行一次 USB 断开/重连
+
+说明:
+  设备先回 ACK，随后短时断开 D+ 再重新连接。
+  Windows 会重新枚举 TenoDX 的 CDC/HID 接口，不需要手动插拔。
+
+  设备侧时序: ACK -> 约 150 ms -> 断开 D+ -> 250 ms -> 重新连接。
+  上位机侧建议: 收到 ACK 后关闭串口，按 50 ms 周期枚举
+  "TenoDX Debug Port" 或匹配的 USB 路径，最多等待 10 s。
+""".strip()
+        )
+        return
+
+    if argv[0].lower() != "reconnect" or len(argv) != 1:
+        command_error("usb 目前只支持 reconnect。", "usb")
+        return
+
+    response = safe_request(
+        client,
+        GLOBAL_MODULE,
+        GLOBAL_CMD_USB_RECONNECT,
+        GLOBAL_PARAM_ALL,
+        bytes([GLOBAL_RECONNECT_CONFIRM]),
+    )
+    if response and response.ok:
+        print("USB 重连命令已接受：设备将在约 150 ms 后断开，并在约 250 ms 后重新连接。")
+        print("请关闭当前串口，等待 TenoDX Debug Port 重新出现后再连接。")
+
+
 def cmd_raw(client: MagicConfigClient, argv: list[str]) -> None:
     if not argv or argv[0].lower() in ("help", "-h", "--help"):
         print_raw_help()
@@ -1594,6 +1636,8 @@ def command_loop(client: MagicConfigClient, args: argparse.Namespace) -> None:
             cmd_touch(client, argv)
         elif root == "dfu":
             cmd_dfu(client, argv)
+        elif root == "usb":
+            cmd_usb(client, argv)
         elif root == "raw":
             cmd_raw(client, argv)
         else:

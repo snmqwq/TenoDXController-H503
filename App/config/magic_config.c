@@ -3,6 +3,7 @@
 #include "flash_config.h"
 #include "main.h"
 #include "status/status_led_app.h"
+#include "usb_control.h"
 #include "usb.h"
 #include <stddef.h>
 #include <string.h>
@@ -13,6 +14,7 @@
 
 #define MAGIC_CONFIG_MODULE_MAX         3U
 #define MAGIC_CONFIG_DFU_DELAY_MS       100U
+#define MAGIC_CONFIG_RECONNECT_DELAY_MS 250U
 #define MAGIC_CONFIG_NVIC_CLEAR_REGS    8U
 
 #ifndef MAGIC_CONFIG_DFU_BOOTLOADER_ADDRESS
@@ -278,6 +280,18 @@ static uint8_t handle_global_command(uint8_t cmd,
             dfu_pending = true;
             dfu_request_tick = HAL_GetTick();
             return MAGIC_CONFIG_STATUS_OK;
+
+        case MAGIC_CONFIG_CMD_USB_RECONNECT:
+            if ((payload == NULL) ||
+                (payload_length != 1U) ||
+                (payload[0] != MAGIC_CONFIG_RECONNECT_CONFIRM))
+            {
+                return MAGIC_CONFIG_STATUS_PARAM_ERROR;
+            }
+
+            return usb_control_request_reenumeration(
+                       MAGIC_CONFIG_RECONNECT_DELAY_MS) ?
+                   MAGIC_CONFIG_STATUS_OK : MAGIC_CONFIG_STATUS_IO_ERROR;
 
         default:
             return MAGIC_CONFIG_STATUS_CMD_ERROR;

@@ -14,7 +14,8 @@ typedef enum
     CDC_MODE_AUTO_RAW = 0,      // 自动识别, 当前按 raw 工作
     CDC_MODE_AUTO_MAI2TOUCH,    // 自动识别, 当前按 Mai2Touch 工作
     CDC_MODE_FORCED_RAW,        // Magic 强制 raw
-    CDC_MODE_FORCED_MAI2TOUCH   // Magic 强制 Mai2Touch
+    CDC_MODE_FORCED_MAI2TOUCH,  // Magic 强制 Mai2Touch
+    CDC_MODE_IO                 // IO 模式, CDC0 承载按键 + 触摸状态
 } cdc_mode_t;
 
 // output 侧切换请求。值没变时是 no-op —— 保持 AUTO 不被误关
@@ -26,6 +27,10 @@ bool cdc_manager_is_mai2touch_active(void);
 
 // 是否处于自动识别模式
 bool cdc_manager_is_auto_mode(void);
+
+/* IO mode has priority over raw/Mai2Touch while enabled. */
+bool cdc_manager_is_io_mode(void);
+void cdc_manager_set_io_mode(bool enabled);
 
 // 当前模式 (含来源)
 cdc_mode_t cdc_manager_get_mode(void);
@@ -50,6 +55,9 @@ void cdc_manager_init(void);
 // from_mai2touch: true=来自 mai2touch, false=来自 tenodata
 // 返回 true 表示数据已写入 CDC 缓冲区, false 表示被路由屏蔽或硬件未就绪
 bool cdc_manager_try_send(bool from_mai2touch, const uint8_t *data, uint16_t len);
+
+/* IO mode has its own source so the regular raw sender cannot share CDC0. */
+bool cdc_manager_try_send_io(const uint8_t *data, uint16_t len);
 
 // ================= 接收 (无路由, 活跃模块自行调用) =================
 

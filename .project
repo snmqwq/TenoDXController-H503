@@ -29,4 +29,18 @@
 		<nature>org.eclipse.cdt.managedbuilder.core.managedBuildNature</nature>
 		<nature>org.eclipse.cdt.managedbuilder.core.ScannerConfigNature</nature>
 	</natures>
+	<!--
+		判定唯一真源在仓库根的 touch_core/，位于本工程目录之外。
+		CubeIDE 只能编译工程内的源码目录，所以把它挂成一个 linked resource：
+		.cproject 只把 src/ 加进构建（host/ 有 main()，tests/ 是 Python，必须排除），
+		头文件路径指向 touch_core/include。缺了这个链接，CubeIDE 会因为找不到
+		teno_touch_core.h 直接编译失败（CMake 构建不受影响，它直接引用 ../touch_core）。
+	-->
+	<linkedResources>
+		<link>
+			<name>touch_core</name>
+			<type>2</type>
+			<locationURI>PARENT-1-PROJECT_LOC/touch_core</locationURI>
+		</link>
+	</linkedResources>
 </projectDescription>

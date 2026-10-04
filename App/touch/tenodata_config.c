@@ -68,14 +68,21 @@ static TenodataChannelMapping const default_mapping[TENODATA_TOTAL_CHANNELS] =
 static TenodataChannelMapping configured_mapping[TENODATA_TOTAL_CHANNELS];
 static TenodataChannelMapping const *active_mapping = default_mapping;
 
-/* Scan parameters are fixed; mapping.block only selects one of these rows. */
+/*
+ * Scan parameters are fixed; mapping.block only selects one of these rows.
+ *
+ * These are the local fallback used in Mai2Touch mode (no host config frame).
+ * They are kept identical to TouchHost-kaede/config.yaml zone_params, which is
+ * what the raw/host path sends in the 139-byte config frame, so switching modes
+ * does not change the capacitance working point.
+ */
 static TenodataChannelConfig const block_profiles[5] =
     {
-        {12U, 15U, 2U, 2U}, /* A */
-        {10U, 25U, 4U, 4U}, /* B */
-        {12U, 30U, 4U, 4U}, /* C */
-        {8U, 10U, 2U, 2U},  /* D */
-        {8U, 8U, 2U, 2U}    /* E */
+        {12U, 50U, 2U, 2U}, /* A */
+        {10U, 30U, 2U, 2U}, /* B */
+        {12U, 30U, 8U, 2U}, /* C */
+        {8U, 35U, 2U, 2U},  /* D */
+        {10U, 40U, 2U, 2U}  /* E */
 };
 
 _Static_assert(sizeof(TenodataChannelMapping) == 2U,

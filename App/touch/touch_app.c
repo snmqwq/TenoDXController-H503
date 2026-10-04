@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "cdc_manager.h"
+#include "io_mode.h"
 #include "mai2touch.h"
 #include "tenodata.h"
 #include "touch_mode.h"
@@ -16,6 +17,7 @@ void touch_app_init(void)
 {
     cdc_manager_init();
     touch_mode_init();
+    io_mode_init();
     tenodata_init();
     mai2touch_init();
 }
@@ -27,7 +29,11 @@ void touch_app_task(void)
     touch_mode_task();
 
     tenodata_task();
-    mai2touch_task();
+    if (!io_mode_is_enabled())
+    {
+        mai2touch_task();
+    }
+    io_mode_task();
 }
 
 bool touch_app_is_mai2touch_active(void)
@@ -87,7 +93,8 @@ bool touch_app_apply_config(TenodataChannelMapping const *mapping,
                mapping,
                sizeof(current_mapping_buffer)) != 0;
     mode_changed =
-        cdc_manager_is_mai2touch_active() != mai2touch_active;
+        !io_mode_is_enabled() &&
+        (cdc_manager_is_mai2touch_active() != mai2touch_active);
 
     if (mapping_changed &&
         !tenodata_config_set_mapping(mapping, count))

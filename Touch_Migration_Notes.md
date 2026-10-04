@@ -1,5 +1,10 @@
 # Touch 功能架构迁移记录
 
+> 触摸算法版本：`per-1.0`，对齐 `alpha-1.0`。
+> 三端流程、版本号与回放数据规范见根目录
+> `docs/TOUCH-ALGORITHM-PIPELINE.md`。
+> 仅当项目负责人明确要求同步时才执行 α → β → per 迁移。
+
 ## 迁移节点
 
 ### 节点 1: 重命名 mai2touch → tenodata
@@ -280,6 +285,158 @@
   - Release 构建通过：`text 67960 / data 184 / bss 15808`（FLASH 上限 122880，余量充足）。
 - **注意**: 固件需要重新烧录（本次未接 ST-Link，需用 CubeIDE 烧）。
 
+### 节点 15: Mai2Touch 内嵌 TouchHost 等价前处理与判定
+
+> ⚠️ **本节点描述的本地判定器已在节点 18 被共享判定核心取代。**
+> 以下内容保留为历史记录，其中的 `button_detector.*` 与阈值真源说明均已作废；
+> 现行方案见节点 18 与根目录 `docs/TENO-TOUCH-CORE-DISTRIBUTION.md`。
+
+- **日期**: 2026-09-26
+- **背景**: 原本只在 TouchHost 里跑 `SerialReader + SignalPipeline + detector.py`，
+  STM32 的 `touch_pipeline` 只是近似实现。目标明确为：**TouchHost 只用于调试，
+  最终算法搬到 STM32**。因此 Mai2Touch 模式必须在设备内完成去重、IIR、预热、
+  校准和判定，只向游戏发送 9B 结果。
+- **确认的差异**:
+  - raw 模式下 STM32 原本就只发 70B 快照；去重发生在 TouchHost，STM32 不去重。
+  - `touch_pipeline` 原来按“单个 I2C 片完成”推进，导致双片交替时预热/校准计数
+    比 TouchHost 的 70B packet 语义快一倍。
+  - `touch_pipeline` 原来按“通道 2 字节”判变化，TouchHost 是按“整片 34 字节”
+    判变化；二者在单通道变化时行为不同。
+  - `button_detector.c` 的 A 区冻结阈值、回升路径、`decline_frames`、简单区
+    `prev_on` 死区记忆和阈值常量均与 `detector.py` 漂移。
+- **变更**:
+  - `App/touch/touch_pipeline.h/c`：接口改为
+    `touch_pipeline_stage_snapshot()` + `touch_pipeline_commit_snapshot()`；
+    I2C 完成只更新 staged 快照，`STATE_RUNNING` 每 2 ms CDC 包提交一次。
+    片级 34B `memcmp` 去重，100 个有效包预热、100 个有效包校准，随后按片更新
+    IIR 与判定。IIR 与基线累加改为 `double`。
+  - `App/touch/tenodata.c`：每片 I2C 完成后只 `stage_snapshot`；2 ms CDC 发送点
+    先 `commit_snapshot`，再发送 9B/raw 帧。
+  - `App/touch/button_detector.h/c`：状态结构按 Python 的 A 区与简单区拆开，
+    逐项移植 `detector.py` 的 A 区状态机、有效信号导数、限幅和平滑、
+    `released_min_diff` 回升、`large_diff_latched`、简单区 `prev_on` 死区记忆。
+  - `App/touch/button_detector_config.h`：阈值全部改为 `detector.py` 当前值。
+  - `tests/pipeline_parity_test.c` + `build_pipeline_parity_test.ps1`：新增主机侧
+    原生回归，直接编译真实管线与判定器，验证片级去重、100+100 门槛、
+    判定分支和真实 A5 idle 样本。
+  - `tests/detector_parity_driver.c` + `generate_detector_parity.py` +
+    `build_detector_parity.ps1`：直接导入 TouchHost 的真实 `detector.py`，
+    用固定场景和 2000 帧随机序列对比固件判定器的 `pressed`、状态机、
+    基线、有效位移、一阶/二阶导数。
+- **工作流**:
+  ```text
+  raw 模式:
+    PSoC -> STM32 2ms 快照 -> CDC0 70B -> TouchHost SerialReader
+         -> SignalPipeline -> detector.py -> COM17 -> 游戏
+
+  Mai2Touch 模式:
+    PSoC -> STM32 stage/commit -> 片级去重 -> IIR -> 100+100 校准
+         -> detector.py 等价判定 -> 9B 区域掩码 -> 游戏
+  ```
+- **验证**:
+  - `tests/build_native_test.ps1`：11 个模式切换场景通过。
+  - `tests/build_pipeline_parity_test.ps1`：片级去重、100+100 门槛、A 区延迟触发/
+    半幅释放、简单区死区、真实 A5 idle 样本全部通过。
+  - `tests/build_detector_parity.ps1`：TouchHost 与固件逐帧对比通过
+    （固定场景、简单区突发、C 区边界和 2000 帧随机序列）。
+  - 当前仓库日志只有 TouchHost 判定后的 CSV，没有保留原始 70B CDC 流；
+    因此本次真实数据验证使用 CSV 中记录的 Raw/SetupRaw 样本做判定回归，
+    raw 70B 全流回放仍需要后续抓一份原始 CDC 日志。
+- **阈值真源**: `detector.py` 顶部写死的 `_A_CONFIG` / `_B_CONFIG` /
+  `_C_CONFIG` / `_D_CONFIG` / `_E_CONFIG`。`config.yaml: zone_configs`
+  当前只被 `config.py` 加载，`SignalPipeline` 不消费它；固件
+  `button_detector_config.h` 已按 `detector.py` 对齐。若以后要改成
+  YAML 可调，需要先改 TouchHost 的判定器接口，再同步设备端。
+
+### 节点 16: 三端固定回放一致性验证
+
+- **日期**: 2026-09-26
+- **版本记录**:
+  ```text
+  per_version: per-1.0
+  aligned_alpha_version: alpha-1.0
+  aligned_beta_version: beta-1.0
+  dataset_id: 202609-source-csv
+  first_fork: none
+  real_device_validation: pending
+  ```
+- **背景**: beta 同步完成后，需要确认 STM32 的完整管线与 TouchHost、
+  melonloader 对同一固定数据给出相同判定，而不只是判定器函数等价。
+- **修正**:
+  - `touch_pipeline` 的提交接口改为 `touch_pipeline_commit_packet()` /
+    `touch_pipeline_commit_batch()`，packet 携带每片有效位与两个 34B
+    payload；`tenodata` 在每个 CDC 周期把期间完成的片级快照合并成 packet
+    批次提交。
+  - 批次内先按片做 34B 去重，再从最新帧向最旧帧分配两片独立的 180 Hz
+    额度，最后按原始顺序把获准 packet 送入 IIR、预热/校准和判定。
+  - 校准完成帧只冻结 `setup_raw`、不执行判定，首判定帧从下一个有效 packet
+    开始，与 `SignalPipeline.process_packet()` 返回 `None` 的边界一致。
+  - 新增 `tests/pipeline_replay_driver.c`、`tests/compare_three_way.py`、
+    `tests/build_three_way_parity.ps1`，直接把同一 `frames.csv` 送入真实
+    `touch_pipeline`，并与 TouchHost/melonloader 输出逐行比较。
+- **验证**:
+  - `powershell -ExecutionPolicy Bypass -File .\tests\build_three_way_parity.ps1`
+  - 结果：固定数据集 `202609-source-csv` 的 23/23 文件、122,298 行通道结果
+    三端一致；比较列为 `pressed/fsm/baseline/effective_diff/deriv/deriv2`，
+    首个分叉帧为 `none`。
+  - `tests/build_pipeline_parity_test.ps1`：包含批次最新优先的新断言通过。
+  - `tests/build_detector_parity.ps1`：固定、简单区、C 区边界与 2000 帧
+    随机序列全部通过。
+  - `build.ps1 -BuildType Release`：Release 链接通过
+    （`text 71984 / data 184 / bss 20896`）。
+- **限制**: 固定 CSV 是判定后数据，不含原始 70B CDC；IIR 原始字节入口仍需
+  `raw-cdc-70b` 数据集补验。实机触摸验证仍为 pending。
+
+### 节点 17: raw 70B 原始流回放入口补齐（未执行真实数据验收）
+
+- **日期**: 2026-10-02
+- **版本记录**:
+  ```text
+  per_version: per-1.0
+  aligned_alpha_version: alpha-1.0
+  aligned_beta_version: beta-1.0
+  dataset_id: none (raw-cdc-70b 未采集)
+  frames_sha256: none
+  first_fork: not_applicable
+  real_device_validation: pending
+  ```
+- **变更**:
+  - 新增 `tests/raw_cdc_replay_driver.c`，从连续 70B 原始流入口调用真实
+    `touch_pipeline_commit_packet()`，保留片级去重、限速、IIR、100 帧预热、
+    100 帧校准、每通道独立判定与 A-E 状态机。
+  - 新增 `tests/run_raw_cdc_parity.ps1`，串行执行 TouchHost、melonloader 和
+    STM32 三端 raw 回放，再用 `tests/compare_three_way.py` 比较
+    `decision/baseline/eff/deriv_eff/deriv2_eff/fsm/large_latch`。
+  - 新增 `tests/build_raw_cdc_replay_test.ps1`，仅用 synthetic fixture 验证
+    驱动可编译可运行，不作为 raw 验收证据。
+- **验证**:
+  - raw 驱动 host 编译通过：`gcc -std=gnu11 ... -DTOUCH_PIPELINE_TEST_PROBES=1`
+  - synthetic fixture 驱动冒烟通过：三端均输出，驱动接线可用。
+  - 真实 `raw-cdc-70b` 数据集未采集，因此首个分叉帧、逐帧数值一致性、
+    STM32 实机触摸均保持 `pending`。
+- **限制**: 未修改 `touch_pipeline.c` / `button_detector.c` 等算法文件。
+
+### 节点 18: 判定收敛到共享核心（旧判定实现删除）
+
+- **日期**: 2026-10-03
+- **背景**: 判定此前在固件、游戏内 Mod 与上位机各有一份手写实现，
+  已经发生真实语义漂移。改为"一份判定、三端共用"。
+- **变更**:
+  - 删除 `App/touch/button_detector.c/.h` 与 `button_detector_config.c/.h`。
+  - 新增 `App/touch/touch_core_port.c/.h`：便携适配层，把固件的通道映射
+    与逐帧数据接进共享判定核心，并导出核心版本信息。
+  - `App/touch/touch_pipeline.c`：判定调用改走共享核心适配层；
+    管线自身的去重、限速、IIR、预热、校准逻辑保持不变。
+  - `CMakeLists.txt`：编入根目录 `touch_core/` 的源码并加入头文件路径；
+    找不到核心时构建直接失败，避免退回本地副本。
+  - `tests/`：宿主管线回归与 raw 回放驱动的编译清单改指向共享核心。
+- **验证**:
+  - `tests/build_pipeline_parity_test.ps1` 全部通过。
+  - `tests/build_raw_cdc_replay_test.ps1` 冒烟通过。
+  - 三端一致性比对在多个数据集上逐帧一致（详见根目录
+    `docs/TENO-TOUCH-CORE-DISTRIBUTION.md`）。
+- **限制**: 实机触摸验证仍为 pending；真实 `raw-cdc-70b` 数据集仍未采集。
+
 ---
 
 ## 当前文件结构
@@ -290,15 +447,19 @@ App/touch/
 ├── tenodata_config.h/c           ← 统一通道映射与固定 A–E 扫描档位
 ├── psoc_comm.h/c                 ← PSoC I2C 通信
 ├── tenodata.h/c                  ← 初始化/重配置状态机 + raw CDC 推流
-├── touch_pipeline.h/c            ← 软件基线、Detector 和区域 OR 合并
-├── button_detector*.h/c          ← A–E 触摸判定逻辑
+├── touch_pipeline.h/c            ← 软件基线、逐通道调用共享判定核心、区域 OR 合并
+├── touch_core_port.h/c           ← 固件侧适配层（映射 + 逐帧数据 → 共享判定核心）
 ├── mai2touch.h/c                 ← Mai2Touch 协议
 └── cdc_manager.h/c               ← CDC0 收发管理 + 路由开关（AUTO / 强制）
 tests/
 ├── native_mode_test.c            ← 本机单测（编译真实模块，不需板子）
+├── pipeline_parity_test.c        ← Mai2Touch/TouchHost 管线等价回归
 ├── native_stubs/                 ← TinyUSB / HAL stub 头
-└── build_native_test.ps1         ← 用 MinGW gcc 构建并运行
+├── build_native_test.ps1         ← 用 MinGW gcc 构建并运行模式识别测试
+└── build_pipeline_parity_test.ps1 ← 构建并运行管线等价测试
 ```
+
+> 判定实现不在本仓库：它属于根目录 `touch_core/`，由本固件编入源码使用。
 
 ## CDC 路由规则
 | 模式 | tenodata 发送 | mai2touch 发送 | CDC RX 分发 |

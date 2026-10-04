@@ -34,6 +34,19 @@ check_c_compiler_flag(
 file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/App/*.c"
 )
+
+# 判定唯一真源来自仓库根的 touch_core/。
+# 如果固件仓库被单独 checkout（没有同级 touch_core/），CMake 配置会失败并
+# 明确提示；这是刻意的，避免悄悄退回某份本地判定副本。
+set(TOUCH_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../touch_core"
+    CACHE PATH "Path to the shared touch_core (single source of truth)")
+
+if(NOT EXISTS "${TOUCH_CORE_DIR}/src/teno_touch_core.c")
+    message(FATAL_ERROR
+        "touch_core not found at ${TOUCH_CORE_DIR}. "
+        "Build from the workspace root, or pass "
+        "-DTOUCH_CORE_DIR=<path-to-touch_core>.")
+endif()
 file(GLOB CORE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/*.c"
 )
@@ -56,7 +69,12 @@ add_executable(${FIRMWARE_NAME}
     ${CORE_SOURCES}
     ${HAL_SOURCES}
     ${TINYUSB_SOURCES}
+    "${TOUCH_CORE_DIR}/src/teno_touch_core.c"
     Core/Startup/startup_stm32h503cbtx.s
+)
+
+target_include_directories(${FIRMWARE_NAME} PRIVATE
+    "${TOUCH_CORE_DIR}/include"
 )
 
 set_target_properties(${FIRMWARE_NAME} PROPERTIES

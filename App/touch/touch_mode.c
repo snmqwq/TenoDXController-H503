@@ -204,6 +204,11 @@ void touch_mode_init(void)
 
 void touch_mode_observe_byte(uint8_t byte)
 {
+    if (cdc_manager_is_io_mode())
+    {
+        return;
+    }
+
     if (!cdc_manager_is_auto_mode())
     {
         /* 已被 Magic 固定模式, 不识别 */
@@ -256,7 +261,7 @@ void touch_mode_task(void)
 
     switch_pending = false;
 
-    if (!cdc_manager_is_auto_mode())
+    if (cdc_manager_is_io_mode() || !cdc_manager_is_auto_mode())
     {
         return;
     }

@@ -53,14 +53,15 @@ main_hid_key_maps[KEYBOARD_APP_MAIN_LAYOUT_COUNT][KEYBOARD_APP_MAIN_KEY_COUNT] =
 static const uint8_t default_config_hid_key_map[KEYBOARD_APP_CONFIG_KEY_COUNT] =
 {
     HID_KEY_3,
-    HID_KEY_KEYPAD_MULTIPLY,
+    HID_KEY_9,
     HID_KEY_8,
-    HID_KEY_9
+    0U
 };
 
 static uint8_t config_hid_key_map[KEYBOARD_APP_CONFIG_KEY_COUNT];
 static keyboard_app_main_layout_t main_layout;
 static uint32_t last_hid_report;
+static bool io_mode_enabled;
 
 static uint8_t keyboard_app_keycode_for_index(uint8_t index)
 {
@@ -81,6 +82,11 @@ static void keyboard_app_send_hid_report(void)
 
     for (uint8_t i = 0; i < KEYBOARD_APP_KEY_COUNT; i++)
     {
+        if (io_mode_enabled && i != 11U)
+        {
+            continue;
+        }
+
         if (button_app_is_pressed(i) &&
             (key_count < KEYBOARD_APP_KEY_COUNT))
         {
@@ -186,6 +192,11 @@ void keyboard_app_reset_keycodes(void)
     memcpy(config_hid_key_map,
            default_config_hid_key_map,
            sizeof(config_hid_key_map));
+}
+
+void keyboard_app_set_io_mode(bool enabled)
+{
+    io_mode_enabled = enabled;
 }
 
 void tud_hid_set_report_cb(uint8_t instance,

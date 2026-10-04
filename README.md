@@ -4,6 +4,15 @@
 
 基于 STM32H503CBT6 的 TenoDX / maimai 控制器固件，提供触摸、灯光、Aime 读卡器、12KRO 键盘和运行时配置接口。
 
+> **触摸算法版本：`per-1.0`，对齐 `alpha-1.0`。**
+> 三端流程与版本规范见根目录
+> [`docs/TOUCH-ALGORITHM-PIPELINE.md`](../docs/TOUCH-ALGORITHM-PIPELINE.md)。
+> STM32 只有收到项目负责人明确的同步指令后，才从 TouchHost 搬入新算法；
+> 最终验收必须从**原始数据入口**回放，完整经过去重、IIR、预热、校准和判定。
+>
+> 当前已完成 `202609-source-csv` 固定数据集的 alpha/beta/per 三端逐帧验证：
+> 23/23 文件、122,298 行通道结果一致，`first_fork=none`。实机验证仍为 pending。
+
 ## 功能概览
 
 | 模块 | 功能 |
@@ -14,6 +23,18 @@
 | Keyboard | 12 个按键、1P/2P 主按键布局和副按键键值配置 |
 | Config | 通过 Magic 协议修改触摸、灯光和键盘配置并保存到 Flash |
 | Status | 使用 PC13 指示初始化、运行、写入和错误状态 |
+
+### USB 重连与 DFU
+
+固件支持通过 Magic 全局命令 `0x85` 请求一次 USB 软件重枚举，
+用于修改 Windows 设备串口后无需手动插拔即可重新识别。命令格式和
+上位机等待/重连流程见
+[`docs/UPPER-COMPUTER-FLASH-AND-RECONNECT.md`](docs/UPPER-COMPUTER-FLASH-AND-RECONNECT.md)。
+
+DFU 方面，`0x84` 命令仍可用于跳转系统 Bootloader；上位机完成下载后必须由
+主机侧发送 DFU 退出/复位请求（例如 `STM32_Programmer_CLI` 的 `-rst`）
+才会运行新固件。当前实测中 DFU 设备枚举尚不稳定，可靠的替代路径是
+ST-Link/SWD 直接烧录并 `-rst`。
 
 ## 硬件接口
 
@@ -26,7 +47,7 @@
 | USART1 | PA9 TX / PA10 RX，115200 8N1 | 调试串口，默认无输出 |
 | GPIO | PC13 | 状态灯，高电平点亮 |
 
-USB 标识为 VID `0xCAFE`、PID `0x4313`，产品名为 `TenoDX Controller`。
+USB 标识为 VID `0x0483`、PID `0x5740`，产品名为 `TenoDX Controller`。
 
 ## USB 接口
 
@@ -50,11 +71,33 @@ USB 标识为 VID `0xCAFE`、PID `0x4313`，产品名为 `TenoDX Controller`。
 | --- | --- | --- | --- |
 | BTN0..BTN7 | `w e d c x z a q` | `keypad_8 keypad_9 keypad_6 keypad_3 keypad_2 keypad_1 keypad_4 keypad_7` | Magic 选择布局，默认 1P |
 | BTN8 | `3` | `3` | Magic 修改键值 |
-| BTN9 | `keypad_multiply` | `keypad_multiply` | Magic 修改键值 |
+| BTN9 | `9` | `9` | Magic 修改键值 |
 | BTN10 | `8` | `8` | Magic 修改键值 |
-| BTN11 | `9` | `9` | Magic 修改键值 |
+| BTN11 | 无（`0`） | 无（`0`） | Magic 修改键值 |
 
 长按 BTN8 约 5 秒可恢复空闲灯效。
+
+### CDC IO 模式
+
+CDC0 还可以由上位机切换到一个独立的游戏 IO 模式。该模式默认关闭；上电后只有收到命令才启用，
+拔掉 USB 后自动恢复默认：
+
+```text
+启用: A6 02 01 A9
+关闭: A6 02 00 A8
+```
+
+启用后 CDC0 转为 9 字节状态帧：
+
+```text
+A5 buttons_lo buttons_hi touch0 touch1 touch2 touch3 touch4 seq
+```
+
+- `buttons` bit0..7 = BTN0..BTN7，bit8 = BTN8（选择键），bit9 = BTN9（Test），bit10 = BTN10（Service）。
+- BTN11 在该模式下仍保持 HID 键盘输出，便于保留正常键盘功能。
+- `touch` 是 34 位游戏区域掩码，与 Mai2Touch 的位序一致。
+- 周期为 2 ms；触摸管线未就绪时触摸位为 0。
+- IO 模式独占 CDC0，raw 70B 和 Mai2Touch 9B 不会同时输出。
 
 ## 状态灯
 
@@ -76,6 +119,66 @@ PC13 状态灯不区分 1P/2P 布局：
 - Mai2LED IO 接管灯光后，可长按 BTN8 恢复空闲灯效。
 
 ## 触摸数据
+
+### 两种 CDC0 模式的数据处理工作流（重要）
+
+上位机是**调试端**，不是最终运行链路。判定逻辑由三端共用的共享核心提供
+（根目录 `touch_core/`），不在此处单独实现；两种模式的职责必须严格区分：
+
+```text
+raw 模式（TouchHost 调试链路）
+PSoC -> STM32 读取原始帧 -> CDC0 70B -> TouchHost
+                                      └─ SerialReader：按片 34B 去重
+                                      └─ SignalPipeline：IIR -> 100 帧预热
+                                      └─ 共享判定核心：A-E 判定
+                                      └─ COM17 -> 游戏
+
+Mai2Touch 模式（游戏直连链路）
+PSoC -> STM32 读取原始帧 -> STM32 内部执行
+       去重 / 限速 / IIR / 预热 / 校准，再调用共享判定核心
+                              └─ 34 位区域掩码 -> 9B Mai2Touch 帧 -> 游戏
+```
+
+> 判定只有一份实现，位于根目录 `touch_core/`；分发与验收约束见
+> `docs/TENO-TOUCH-CORE-DISTRIBUTION.md`。
+
+关键规则：
+
+- **raw 模式下 STM32 不做判定，也不运行 `touch_pipeline`**。它只按 2 ms 发送
+  70B 快照；去重、IIR、预热、校准和判定全部由 TouchHost 完成。
+- **Mai2Touch 模式下 STM32 自己运行完整前处理与判定**，最后只把 9B 掩码发给游戏。
+- 两种模式不能同时处理同一份数据，CDC0 路由互斥。
+
+### STM32 的 TouchHost 等价前处理（Mai2Touch 模式）
+
+设备端处理顺序固定为：
+
+```text
+1. 收集两片 PSoC 的最新快照
+2. 每个 2 ms CDC 包提交一次，不按单次 I2C 完成推进
+3. 按片比较 34 字节 payload，完全相同的片丢弃
+4. 对发生变化的片执行 IIR: history = (history + raw) / 2
+5. 100 个有效包预热
+6. 再收集 100 个有效包的 setup_raw 基线
+7. 对发生变化的片逐通道执行 detector.py 等价判定
+8. raw == 0 强制按下；同区域多通道按最后更新通道覆写
+9. 打包 34 位区域掩码为 9B Mai2Touch 数据帧
+```
+
+> **去重语义**：按片 34B payload 比较。只要该片任一字节变化，该片 17 个通道
+> 全部进入管线；整片完全相同则完全不推进 IIR、预热、校准或判定。
+> 这与 TouchHost `SerialReader` 的 `dev1_changed` / `dev2_changed` 一致。
+
+> **为什么要按包提交**：如果每完成一片 I2C 就读入管线，两片交替会让
+> 预热/校准计数速度翻倍；只有每 2 ms 提交一次两片快照，计数才与 TouchHost
+> 每个 70B packet 的行为一致。
+
+> **精度**：IIR 历史与 `setup_raw` 累加使用 `double`，与上位机一致；最终
+> 通道值按 Python `int()` 向零截断。
+>
+> **判定不在本仓库实现**：判定语义与参数统一由共享核心提供
+> （根目录 `touch_core/`），固件只保留适配层与管线前处理。
+> 细节以核心代码为准，见根目录 `docs/TENO-TOUCH-CORE-DISTRIBUTION.md`。
 
 ### CDC0 输出模式：默认自动识别
 
@@ -178,9 +281,11 @@ Touch 的 Flash 及 `ALL` 序列化格式固定为 `[version=2, mode, mapping[68
 
 ## Flash 配置
 
-内部 Flash 最后 8 KiB 用于配置，划分为四个 2 KiB 槽：
+内部 Flash 最后 8 KiB 用于配置，按 **64 条 × 128 字节滚动记录**保存，而不是四个固定槽。
+每条记录带 CRC32 并覆盖 touch / light / reserved / keyboard 四个逻辑槽；读取时取
+`sequence` 最新的一条。兼容读取旧版四个 2 KiB 槽的记录，新写入一律使用滚动记录。
 
-| 槽 | 用途 |
+| 逻辑槽 | 用途 |
 | --- | --- |
 | 0 | touch |
 | 1 | light |
@@ -231,6 +336,9 @@ keyboard save
 
 ## 构建
 
+> 上位机实现 USB 自动重连与 DFU 刷写后自动启动时，请参考
+> [`docs/UPPER-COMPUTER-FLASH-AND-RECONNECT.md`](docs/UPPER-COMPUTER-FLASH-AND-RECONNECT.md)。
+
 推荐使用 STM32CubeIDE 1.19 或兼容版本：
 
 1. 克隆仓库。
@@ -279,6 +387,30 @@ powershell -ExecutionPolicy Bypass -File .\tests\build_native_test.ps1
 覆盖场景：完整握手（`{RSET}` → 配置回显 → `{STAT}`）、`{STAT}` 立即发空白帧、
 `{HALT}` 完全静默、双向自动切换、raw 帧校验和等于 `0x7B` 时不误切、
 非法命令体不切换、触发切换的命令被正确补喂、Magic 强制模式优先、半截帧头不切换。
+
+另有 `tests/pipeline_parity_test.c`，直接编译真实的
+`touch_pipeline.c` / `button_detector.c` / `detector.py` 对应逻辑，验证：
+
+- 片级 34B 去重；
+- 100 个有效包预热 + 100 个有效包校准后才 ready；
+- IIR 首帧 seed 与截断；
+- A 区延迟触发、触发锁存和半幅释放；
+- B/C/D/E 的死区记忆；
+- 真实 TouchHost 日志中的 A5 idle 原始样本不产生幻触。
+
+> 当前仓库里的 TouchHost CSV 只记录了判定后的 `Raw/SetupRaw/Diff/...` 行，
+> 没有保存 CDC0 的原始 70B 帧，所以完整 raw 流回放仍需补抓一份原始日志；
+> 现有回归用 CSV 中记录的真实 Raw 序列验证判定器。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tests\build_pipeline_parity_test.ps1
+```
+
+三端完整管线对比使用：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tests\build_three_way_parity.ps1
+```
 
 推送到 `main`、创建面向 `main` 的 Pull Request 或手动运行 **Build firmware**
 工作流时，GitHub Actions 会使用 Arm GNU Toolchain 13.3.Rel1 构建 Release 固件。

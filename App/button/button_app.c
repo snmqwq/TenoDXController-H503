@@ -83,8 +83,7 @@ void button_app_init(void)
 {
     for (uint8_t i = 0; i < BUTTON_APP_COUNT; i++)
     {
-        uint8_t active_level =
-            (i < BUTTON_APP_MAIN_COUNT) ? GPIO_PIN_SET : GPIO_PIN_RESET;
+        uint8_t active_level = GPIO_PIN_RESET;
 
         button_init(&buttons[i], button_app_read_gpio, active_level, i);
 
@@ -96,11 +95,7 @@ void button_app_init(void)
                           NULL);
         }
 
-        if ((i >= BUTTON_APP_MAIN_COUNT) ||
-            (button_app_read_gpio(i) == GPIO_PIN_RESET))
-        {
-            (void)button_start(&buttons[i]);
-        }
+        (void)button_start(&buttons[i]);
     }
 
     initialized = true;
