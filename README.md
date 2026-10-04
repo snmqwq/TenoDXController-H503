@@ -294,12 +294,8 @@ Touch 的 Flash 及 `ALL` 序列化格式固定为 `[version=2, mode, mapping[68
 
 ## 配置工具
 
-配置工具需要 Python 3 和 pyserial：
-
-```powershell
-python -m pip install -r tools/requirements.txt
-python tools/magic_config_tool.py
-```
+设备配置、综合测试与 DFU 刷写统一由工作区根目录的
+`tools/TenoDXConfigurationTool/` 提供（独立仓库，含图形界面）。安装与用法见该目录 README。
 
 连接时选择 `TenoDX Debug Port`。工具支持触摸映射与输出模式、灯光配置、1P/2P 布局、副按键键值、原始 Magic 请求和系统 DFU。
 
@@ -432,7 +428,6 @@ powershell -ExecutionPolicy Bypass -File .\tests\build_three_way_parity.ps1
 | `Core/` | CubeMX 外设初始化、中断和 HAL 接入 |
 | `Drivers/` | STM32 HAL 与 CMSIS |
 | `tinyusb/` | TinyUSB 协议栈 |
-| `tools/` | 配置和测试工具 |
 | `tests/` | 本机单元测试（编译真实模块，不需要板子） |
 | `ref/` | 协议、原理图和移植参考资料 |
 

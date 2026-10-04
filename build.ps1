@@ -312,12 +312,17 @@ Write-Host ''
 & arm-none-eabi-size $artifacts['ELF']
 
 if (-not $NoStamp) {
-    $stampScript = Join-Path $PSScriptRoot 'tools\stamp_firmware.ps1'
-    if (Test-Path -LiteralPath $stampScript -PathType Leaf) {
-        & $stampScript -InputDir $buildPath -BaseName $FirmwareName
-        if ($LASTEXITCODE -ne 0) { throw "生成时间戳副本失败 (exit $LASTEXITCODE)" }
-    } else {
-        Write-Host "    未找到 $stampScript，跳过时间戳副本" -ForegroundColor Yellow
+    # 生成带本地时间戳的 BIN/HEX 副本。原 tools\stamp_firmware.ps1 的逻辑已内联到此处，
+    # 因为 tools\ 已整体删除。根 build-all.ps1 走 -NoStamp，由它自己统一加版本与时间戳。
+    $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    foreach ($extension in @('hex', 'bin')) {
+        $sourcePath = Join-Path $buildPath "$FirmwareName.$extension"
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            throw "缺少固件产物: $sourcePath"
+        }
+        $destinationPath = Join-Path $buildPath "$($FirmwareName)_$stamp.$extension"
+        Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+        Write-Host "    时间戳副本: $destinationPath" -ForegroundColor DarkGray
     }
 }
 

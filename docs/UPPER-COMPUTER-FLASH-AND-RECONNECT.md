@@ -305,7 +305,7 @@ STM32_Programmer_CLI.exe -c "port=USB1 sn=<目标序列号>" -w firmware.hex -v 
 | `App/config/magic_config.c/.h` | 增加全局 Magic 命令 `0x85` |
 | `App/config/config_app.c` | 在主循环中运行 USB 重连任务 |
 | `Core/Src/usb_descriptors.c` | CDC/HID 接口与 VID/PID 描述 |
-| `tools/magic_config_tool.py` | 配置工具中的 `usb reconnect` 命令示例 |
+| `tools/TenoDXConfigurationTool/` | 配置工具中的 `usb reconnect` 命令示例 |
 
 固件不负责在 DFU 下载完成后自行重启，因为应用固件在 DFU 期间没有运行权；该步骤必须由上位机的 DFU 客户端完成。
 
