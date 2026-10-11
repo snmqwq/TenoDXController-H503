@@ -16,7 +16,7 @@
 #define MAI2TOUCH_CMD_SENS    0x6B  // 'k'
 
 #define MAI2TOUCH_FRAME_SIZE  9U     // ( + 7 data + )
-#define MAI2TOUCH_TXD_PERIOD_MS 4U   // 约 250Hz (匹配 MPR121 采样率)
+#define MAI2TOUCH_TXD_PERIOD_MS 4U   // 约 250Hz (匹配 MPR121 采样率) 的保底节奏
 
 // ================= 触摸状态 =================
 // 35 bits 位掩码, 有效 34 bits (touch bit 0~33)
@@ -26,6 +26,9 @@ static uint64_t touch_bits = 0;
 // 数据发送控制
 static bool sending = false;        // 收到 {STAT} 后开始发送
 static uint32_t next_send_tick = 0;
+// 上次真正发出的掩码: 掩码一变就立刻补发, 不再等 4 ms 周期
+static uint64_t last_sent_bits = 0;
+static bool last_sent_valid = false;
 
 // 串口接收缓冲
 static uint8_t rx_packet[6];
@@ -40,6 +43,8 @@ void mai2touch_init(void) {
     sending = false;
     rx_len = 0;
     next_send_tick = HAL_GetTick();
+    last_sent_bits = 0;
+    last_sent_valid = false;
 }
 
 uint64_t* mai2touch_get_touch_bits(void) {
@@ -61,6 +66,8 @@ static void mai2touch_cmd_rset(void) {
     touch_bits = 0;
     sending = false;
     rx_len = 0;
+    last_sent_bits = 0;
+    last_sent_valid = false;
 }
 
 static void mai2touch_cmd_stat(void) {
@@ -68,6 +75,7 @@ static void mai2touch_cmd_stat(void) {
      * 让游戏尽快收到第一帧 (管线未就绪时是空白帧)。 */
     sending = true;
     next_send_tick = HAL_GetTick();
+    last_sent_valid = false;
 }
 
 static void mai2touch_cmd_echo(const uint8_t *cmd) {
@@ -173,18 +181,15 @@ static void mai2touch_send_bits(uint64_t bits) {
     cdc_manager_try_send(true, frame, MAI2TOUCH_FRAME_SIZE);
 }
 
-static void mai2touch_pack_and_send(void) {
-    /* 管线还没就绪 (PSoC 正在校准 / 软件基线还在预热) 时发"空白帧"。
-     *
-     * 为什么必须先发空白而不是等数据: 游戏收到 {STAT} 后立刻进入 Drive 状态,
-     * 只收不发; 如果这边一直不吐字节, 游戏的读循环拿不到任何触摸结果就会报错。
-     * 空白帧 = 全部 34 位为 0 (无人触摸), 是协议内的合法帧。 */
-    if (!touch_pipeline_is_ready()) {
-        mai2touch_send_bits(0U);
-        return;
-    }
-
-    mai2touch_send_bits(touch_bits);
+/*
+ * 管线还没就绪 (PSoC 正在校准 / 软件基线还在预热) 时对外是"空白帧"。
+ *
+ * 为什么必须先发空白而不是等数据: 游戏收到 {STAT} 后立刻进入 Drive 状态,
+ * 只收不发; 如果这边一直不吐字节, 游戏的读循环拿不到任何触摸结果就会报错。
+ * 空白帧 = 全部 34 位为 0 (无人触摸), 是协议内的合法帧。
+ */
+static uint64_t mai2touch_emit_bits(void) {
+    return touch_pipeline_is_ready() ? touch_bits : 0U;
 }
 
 // ================= 主循环 =================
@@ -198,9 +203,25 @@ void mai2touch_task(void) {
     // 1. 处理接收命令
     mai2touch_process_rx();
 
-    // 2. 定时发送触摸数据
-    if (sending && (int32_t)(now - next_send_tick) >= 0) {
-        next_send_tick = now + MAI2TOUCH_TXD_PERIOD_MS;
-        mai2touch_pack_and_send();
+    if (!sending) {
+        last_sent_valid = false;
+        return;
+    }
+
+    // 2. 发送触摸数据: 掩码一变立刻发 (docs/Mai2TouchREADME.md §6 允许随时发,
+    //    主机同一读周期内的多帧按位或合并), 其余时间按 4 ms 保底续发。
+    {
+        uint64_t bits = mai2touch_emit_bits();
+        bool due = (int32_t)(now - next_send_tick) >= 0;
+        bool changed = !last_sent_valid || (bits != last_sent_bits);
+
+        if (due || changed) {
+            if (due) {
+                next_send_tick = now + MAI2TOUCH_TXD_PERIOD_MS;
+            }
+            mai2touch_send_bits(bits);
+            last_sent_bits = bits;
+            last_sent_valid = true;
+        }
     }
 }

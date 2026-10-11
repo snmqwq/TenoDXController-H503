@@ -45,21 +45,23 @@ static uint16_t io_mode_button_bits(void)
 
     for (uint8_t button = 0U; button < 8U; button++)
     {
-        if (button_app_is_pressed(button))
+        /* Main keys drive the game buttons: read them without the debounce
+         * that the config switches need. */
+        if (button_app_is_pressed_immediate(button))
         {
             bits |= (uint16_t)(1U << button);
         }
     }
 
-    if (button_app_is_pressed(8U))
+    if (button_app_is_pressed_immediate(8U))
     {
         bits |= (uint16_t)(1U << 8);
     }
-    if (button_app_is_pressed(9U))
+    if (button_app_is_pressed_immediate(9U))
     {
         bits |= (uint16_t)(1U << 9);
     }
-    if (button_app_is_pressed(10U))
+    if (button_app_is_pressed_immediate(10U))
     {
         bits |= (uint16_t)(1U << 10);
     }

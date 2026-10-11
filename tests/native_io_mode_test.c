@@ -28,6 +28,10 @@ bool button_app_is_pressed(uint8_t button_id)
 {
     return (button_id < 12U) && g_buttons[button_id];
 }
+bool button_app_is_pressed_immediate(uint8_t button_id)
+{
+    return (button_id < 12U) && g_buttons[button_id];
+}
 uint16_t button_app_read_main_mask8(void) { return 0U; }
 bool button_app_set_long_press_callback(uint8_t button_id,
                                         void (*callback)(uint8_t, void *),

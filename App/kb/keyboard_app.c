@@ -87,7 +87,8 @@ static void keyboard_app_send_hid_report(void)
             continue;
         }
 
-        if (button_app_is_pressed(i) &&
+        /* Game input: main keys are read without MultiButton's debounce. */
+        if (button_app_is_pressed_immediate(i) &&
             (key_count < KEYBOARD_APP_KEY_COUNT))
         {
             report.keycode[key_count++] =

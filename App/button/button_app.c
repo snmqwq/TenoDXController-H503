@@ -153,6 +153,30 @@ bool button_app_is_pressed(uint8_t button_id)
     return button_is_pressed(&buttons[button_id]) > 0;
 }
 
+/*
+ * The main keys are driven by the key panel's open-drain outputs, so the pin
+ * level is already a clean digital signal. MultiButton would need
+ * DEBOUNCE_TICKS (3) * BUTTON_APP_TICK_INTERVAL_MS (5 ms) = 15 ms before it
+ * exposed a press, which a rhythm game feels. Read those pins directly
+ * instead. The config keys stay on the debounced path: they are bare switches
+ * and their latency is irrelevant.
+ */
+bool button_app_is_pressed_immediate(uint8_t button_id)
+{
+    if (!initialized || (button_id >= BUTTON_APP_COUNT) || !enabled[button_id])
+    {
+        return false;
+    }
+
+    if (button_id >= BUTTON_APP_MAIN_COUNT)
+    {
+        return button_app_is_pressed(button_id);
+    }
+
+    return button_app_read_gpio(button_id) ==
+           button_app_active_level(button_id);
+}
+
 bool button_app_is_enabled(uint8_t button_id)
 {
     if (!initialized || (button_id >= BUTTON_APP_COUNT))
@@ -169,7 +193,7 @@ uint16_t button_app_read_main_mask8(void)
 
     for (uint8_t i = 0; i < BUTTON_APP_MAIN_COUNT; i++)
     {
-        if (button_app_is_pressed(i))
+        if (button_app_is_pressed_immediate(i))
         {
             mask |= (uint16_t)(1U << i);
         }
