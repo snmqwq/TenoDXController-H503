@@ -360,7 +360,12 @@ bool touch_pipeline_test_emitted(void)
 void touch_pipeline_commit_batch(const uint8_t *packets,
                                  uint16_t packet_count)
 {
-    PendingPacket pending[PIPELINE_MAX_BATCH_FRAMES];
+    /*
+     * 单帧 64 x 76B 的临时分类缓冲, 只在主循环 (非中断、不可重入) 使用。
+     * 放栈上会一次吃掉约 4.6 KB, 而本板 MSP 只有约 10 KB 可用 (中断共用),
+     * 所以固定放 .bss。
+     */
+    static PendingPacket pending[PIPELINE_MAX_BATCH_FRAMES];
     uint16_t accepted_count = 0U;
 
     if ((packets == NULL) || (packet_count == 0U))

@@ -60,7 +60,6 @@ static const uint8_t default_config_hid_key_map[KEYBOARD_APP_CONFIG_KEY_COUNT] =
 
 static uint8_t config_hid_key_map[KEYBOARD_APP_CONFIG_KEY_COUNT];
 static keyboard_app_main_layout_t main_layout;
-static uint32_t last_hid_report;
 static bool io_mode_enabled;
 
 static uint8_t keyboard_app_keycode_for_index(uint8_t index)
@@ -73,7 +72,7 @@ static uint8_t keyboard_app_keycode_for_index(uint8_t index)
     return config_hid_key_map[index - KEYBOARD_APP_CONFIG_KEY_FIRST];
 }
 
-static void keyboard_app_send_hid_report(void)
+static bool keyboard_app_send_hid_report(void)
 {
     hid_keyboard_12kro_report_t report;
     uint8_t key_count = 0U;
@@ -96,10 +95,12 @@ static void keyboard_app_send_hid_report(void)
         }
     }
 
-    if (tud_hid_n_ready(0))
+    if (!tud_hid_n_ready(0))
     {
-        (void)tud_hid_n_report(0, 0, &report, sizeof(report));
+        return false;
     }
+
+    return tud_hid_n_report(0, 0, &report, sizeof(report));
 }
 
 void keyboard_app_init(void)
@@ -109,14 +110,12 @@ void keyboard_app_init(void)
 
 void keyboard_app_task(void)
 {
-    uint32_t now = HAL_GetTick();
-
-    if ((uint32_t)(now - last_hid_report) >=
-        KEYBOARD_APP_HID_REPORT_INTERVAL_MS)
-    {
-        last_hid_report = now;
-        keyboard_app_send_hid_report();
-    }
+    /*
+     * 端点一空就用当前按键状态补一帧, 不再等固定 2 ms 拍点: 主机每 2 ms
+     * 轮询一次 IN 端点, 采样时刻越贴近轮询时刻, 按键就越快被上报。
+     * 上一帧还没发走时 tud_hid_n_ready() 为假, 所以不会堆积报文。
+     */
+    (void)keyboard_app_send_hid_report();
 }
 
 bool keyboard_app_get_keycode(uint8_t index, uint8_t *out_keycode)

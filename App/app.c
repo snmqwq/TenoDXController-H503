@@ -76,10 +76,17 @@ void app_task(void)
 {
     status_led_app_task();
     tud_task();
-    aime_reader_app_task();
-    touch_app_task();
+
+    /*
+     * 输入优先: 先把按键采样与 HID 报文发出去, 再跑触摸/读卡/LED/配置。
+     * 触摸提交 (每个 2 ms 包一次 34 通道判定) 与 Flash 写入都会阻塞主循环,
+     * 排在按键后面就等于把这段耗时加到按键时延上。
+     */
     button_app_task();
     keyboard_app_task();
+
+    aime_reader_app_task();
+    touch_app_task();
     mai2led_app_task();
     config_app_task();
 }

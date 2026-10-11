@@ -13,7 +13,9 @@ extern "C" {
 #define KEYBOARD_APP_CONFIG_KEY_FIRST   8U
 #define KEYBOARD_APP_CONFIG_KEY_COUNT   4U
 
-// Shared by the keyboard task and the full-speed USB HID endpoint descriptor.
+// Full-speed USB HID endpoint polling interval (the descriptor's bInterval).
+// The keyboard task itself is no longer paced by this: it reports as soon as
+// the endpoint frees up, so the host sees the freshest button state.
 #define KEYBOARD_APP_HID_REPORT_INTERVAL_MS  2U
 
 typedef enum
