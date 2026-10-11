@@ -1,7 +1,6 @@
-# Run the TouchHost <-> melonloader <-> STM32 raw-CDC parity.
+# Run the TouchHost-kaede <-> melonloader <-> STM32 raw-CDC parity.
 #
-# Input is a raw dataset directory produced by
-# TouchHost/tools/capture_raw_cdc.py:
+# Input is a raw dataset directory:
 #
 #   <dataset>/frames.bin
 #   <dataset>/mapping.csv
@@ -25,7 +24,7 @@ $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 
 $root = (Resolve-Path '..').Path
-$touchHost = Join-Path $root 'TouchHost'
+$touchHost = Join-Path $root 'TouchHost-kaede'
 $devkit = Join-Path $root 'melonloader-mod\TenoDXIO\src\TenoDXIO.DevKit\bin\Release\net8.0\tenodx-devkit.dll'
 $datasetPath = (Resolve-Path -LiteralPath $Dataset).Path
 $frames = Join-Path $datasetPath 'frames.bin'
@@ -78,7 +77,7 @@ python (Join-Path $touchHost 'tools\raw_cdc_replay.py') `
     --rate-hz $RateHz `
     --out-dir $out
 if ($LASTEXITCODE -ne 0) {
-    throw 'TouchHost raw replay failed.'
+    throw 'TouchHost-kaede raw replay failed.'
 }
 
 dotnet $devkit raw-parity `

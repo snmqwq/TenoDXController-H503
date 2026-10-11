@@ -11,11 +11,22 @@ extern "C" {
 #define BUTTON_APP_COUNT       12U
 #define BUTTON_APP_MAIN_COUNT   8U
 
+/*
+ * BTN0..BTN7 (main keys) are active-high; BTN8..BTN11 (config keys) are
+ * active-low. See button_app.c for the GPIO wiring behind this choice.
+ *
+ * Every key is probed once at power-up: a channel that already reads high has
+ * no key installed and is disabled for the whole session, so it never reports
+ * presses to the HID keyboard, CDC0 IO mode, the idle lights or long-press
+ * callbacks.
+ */
+
 typedef void (*button_app_callback_t)(uint8_t button_id, void *context);
 
 void button_app_init(void);
 void button_app_task(void);
 bool button_app_is_pressed(uint8_t button_id);
+bool button_app_is_enabled(uint8_t button_id);
 uint16_t button_app_read_main_mask8(void);
 bool button_app_set_long_press_callback(uint8_t button_id,
                                         button_app_callback_t callback,

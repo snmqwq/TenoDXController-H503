@@ -11,6 +11,7 @@
 #include "magic_config.h"
 #include "touch/psoc_comm.h"
 #include "touch/touch_app.h"
+#include "touch/touch_core_port.h"
 
 #define TOUCH_PARAM_CHANNEL_MAPPING       0x01U
 #define TOUCH_PARAM_CDC_MODE              0x02U
@@ -18,9 +19,16 @@
 #define TOUCH_PARAM_PSOC_STATUS           0x04U
 #define TOUCH_PARAM_FORCE_RESEND          0x05U
 #define TOUCH_PARAM_CP                    0x06U
+#define TOUCH_PARAM_CORE_INFO             0x07U
 
 /* 0x05 写入载荷: 1 字节, 非 0 表示强制上位机重新下发扫描参数 */
 #define TOUCH_FORCE_RESEND_TRIGGER        0x01U
+
+/* 能力载荷 data[7]: bit0 = 支持 0x05 强制重新下发扫描参数,
+ *                  bit1 = 支持 0x07 读取判定核心身份。
+ * 只加位、不改长度, 老上位机仍能解析。 */
+#define TOUCH_CAPABILITY_FORCE_RESEND     0x01U
+#define TOUCH_CAPABILITY_CORE_INFO        0x02U
 
 /* 0x06 读取载荷: 每片 = Cp(17ch × 2B 大端) + 补偿 IDAC(17ch × 1B) + 快照年龄(2B 大端, ms) */
 #define TOUCH_CP_DEVICE_AGE_LENGTH        2U
@@ -30,6 +38,12 @@
      TOUCH_CP_DEVICE_AGE_LENGTH)
 #define TOUCH_CP_PAYLOAD_LENGTH \
     (TENODATA_STATUS_DEVICE_COUNT * TOUCH_CP_DEVICE_STRIDE)
+
+/* 0x07 读取载荷: 判定核心身份, 3 × u32 小端 = ABI / 算法版本 / 参数指纹。
+ * 三端各报一组, 用来核对"是不是同一版判定、同一组阈值"。 */
+#define TOUCH_CORE_INFO_U32_COUNT         3U
+#define TOUCH_CORE_INFO_PAYLOAD_LENGTH \
+    (TOUCH_CORE_INFO_U32_COUNT * 4U)
 
 /* cdc_mode 取值: 0/1 = 强制固定到某一侧, 2 = 自动识别 (默认)。
  * 读回时会报告 2, 当前实际在跑哪一侧由状态参数 0x04 显示。 */
@@ -68,6 +82,8 @@ _Static_assert(TOUCH_STATUS_PAYLOAD_LENGTH == 16U,
                "Touch status payload must be 16 bytes");
 _Static_assert(TOUCH_CP_PAYLOAD_LENGTH == 106U,
                "Touch Cp payload must be 106 bytes (2 x (34B Cp + 17B comp + 2B age))");
+_Static_assert(TOUCH_CORE_INFO_PAYLOAD_LENGTH == 12U,
+               "Touch core info payload must be three little-endian u32");
 
 /* Magic callbacks run synchronously from the main loop, so shared work
  * buffers avoid placing several mapping objects on the MCU stack.
@@ -201,6 +217,15 @@ static bool touch_config_save_to_flash(void)
                               sizeof(payload_buffer));
 }
 
+/* 判定核心身份按小端 u32 发出, 与上位机的 struct.unpack("<I") 对应。 */
+static void put_u32_le(uint8_t *out, uint32_t value)
+{
+    out[0] = (uint8_t)(value & 0xffU);
+    out[1] = (uint8_t)((value >> 8U) & 0xffU);
+    out[2] = (uint8_t)((value >> 16U) & 0xffU);
+    out[3] = (uint8_t)((value >> 24U) & 0xffU);
+}
+
 static bool touch_magic_read(uint8_t param,
                              uint8_t *data,
                              uint8_t max_length,
@@ -275,6 +300,22 @@ static bool touch_magic_read(uint8_t param,
             }
 
             *out_length = TOUCH_STATUS_PAYLOAD_LENGTH;
+            return true;
+        }
+
+        case TOUCH_PARAM_CORE_INFO:
+        {
+            /* 判定核心身份 (ABI / 算法版本 / 参数指纹)。核心未初始化时
+             * touch_core_port_* 访问器会自行完成初始化, 所以这里可以直接读。 */
+            if (max_length < TOUCH_CORE_INFO_PAYLOAD_LENGTH)
+            {
+                return false;
+            }
+
+            put_u32_le(&data[0], touch_core_port_abi_version());
+            put_u32_le(&data[4], touch_core_port_algorithm_version());
+            put_u32_le(&data[8], touch_core_port_params_hash());
+            *out_length = TOUCH_CORE_INFO_PAYLOAD_LENGTH;
             return true;
         }
 
@@ -495,8 +536,8 @@ static bool touch_magic_info(uint8_t param,
     data[4] = sizeof(TenodataChannelMapping);
     data[5] = TOUCH_BATCH_RECORD_LENGTH;
     data[6] = TOUCH_PAYLOAD_VERSION;
-    /* 能力位: bit0 = 支持 0x05 强制重新下发扫描参数 */
-    data[7] = 0x01U;
+    /* 能力位: bit0 = 强制重新下发扫描参数, bit1 = 读取判定核心身份 */
+    data[7] = TOUCH_CAPABILITY_FORCE_RESEND | TOUCH_CAPABILITY_CORE_INFO;
     /* 只读参数 */
     data[8] = TOUCH_PARAM_PSOC_STATUS;
     data[9] = TOUCH_PARAM_CP;

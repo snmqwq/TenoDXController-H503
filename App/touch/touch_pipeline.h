@@ -5,9 +5,10 @@
 #include <stdint.h>
 
 /*
- * Initialize the detector pipeline. Mirrors TouchHost SerialReader +
- * SignalPipeline/detector.py: per-board dedup -> IIR -> 100-frame warm-up ->
- * 100-frame setup_raw collection -> detector.py decision.
+ * Initialize the detector pipeline. Mirrors the upper computer's
+ * serial_reader.py + signal_pipeline.py (TouchHost-kaede): per-board dedup ->
+ * IIR -> 100-frame warm-up -> 100-frame setup_raw collection -> shared
+ * decision core (touch_core).
  */
 void touch_pipeline_init(void);
 
@@ -32,7 +33,7 @@ uint64_t touch_pipeline_get_touch_bits(void);
  * Commit a batch of packets. Each packet is a validity mask followed by two
  * 34-byte PSoC payloads in board order (0 first). A board whose validity bit
  * is clear is absent, not a zero sample. This matches the 70B packet batch
- * TouchHost drains before spending each board's 180 Hz budget newest-first.
+ * TouchHost-kaede drains before spending each board's 180 Hz budget newest-first.
  */
 #define TOUCH_PIPELINE_PACKET_MASK_BYTES 1U
 #define TOUCH_PIPELINE_PACKET_PAYLOAD_BYTES 68U

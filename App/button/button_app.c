@@ -10,8 +10,19 @@
 static Button buttons[BUTTON_APP_COUNT];
 static button_app_callback_t long_press_callbacks[BUTTON_APP_COUNT];
 static void *long_press_contexts[BUTTON_APP_COUNT];
+static bool enabled[BUTTON_APP_COUNT];
 static uint32_t last_button_tick;
 static bool initialized;
+
+/*
+ * BTN0..BTN7 (main keys) are driven by open-drain button outputs and the
+ * GPIOs are configured as pull-up inputs, so a pressed main key reads high.
+ * BTN8..BTN11 (config keys) are switches to GND and stay active-low.
+ */
+static uint8_t button_app_active_level(uint8_t button_id)
+{
+    return (button_id < BUTTON_APP_MAIN_COUNT) ? GPIO_PIN_SET : GPIO_PIN_RESET;
+}
 
 static uint8_t button_app_read_gpio(uint8_t button_id)
 {
@@ -54,8 +65,21 @@ static uint8_t button_app_read_gpio(uint8_t button_id)
             return HAL_GPIO_ReadPin(BTN11_GPIO_Port, BTN11_Pin);
 
         default:
-            return GPIO_PIN_SET;
+            /* Out-of-range ids are never scanned; report the released level. */
+            return (uint8_t)((button_app_active_level(button_id) == GPIO_PIN_RESET)
+                                 ? GPIO_PIN_SET
+                                 : GPIO_PIN_RESET);
     }
+}
+
+/*
+ * Keys are probed once at power-up. The key panel holds every connected
+ * channel low while the key is idle, so a channel that already reads high
+ * right after reset has no key installed and is disabled for the session.
+ */
+static bool button_app_detect_installed(uint8_t button_id)
+{
+    return button_app_read_gpio(button_id) == GPIO_PIN_RESET;
 }
 
 static void button_app_long_press_handler(Button *handle, void *user_data)
@@ -83,7 +107,14 @@ void button_app_init(void)
 {
     for (uint8_t i = 0; i < BUTTON_APP_COUNT; i++)
     {
-        uint8_t active_level = GPIO_PIN_RESET;
+        enabled[i] = button_app_detect_installed(i);
+
+        if (!enabled[i])
+        {
+            continue;
+        }
+
+        uint8_t active_level = button_app_active_level(i);
 
         button_init(&buttons[i], button_app_read_gpio, active_level, i);
 
@@ -114,12 +145,22 @@ void button_app_task(void)
 
 bool button_app_is_pressed(uint8_t button_id)
 {
-    if (!initialized || (button_id >= BUTTON_APP_COUNT))
+    if (!initialized || (button_id >= BUTTON_APP_COUNT) || !enabled[button_id])
     {
         return false;
     }
 
     return button_is_pressed(&buttons[button_id]) > 0;
+}
+
+bool button_app_is_enabled(uint8_t button_id)
+{
+    if (!initialized || (button_id >= BUTTON_APP_COUNT))
+    {
+        return false;
+    }
+
+    return enabled[button_id];
 }
 
 uint16_t button_app_read_main_mask8(void)
@@ -142,6 +183,11 @@ bool button_app_set_long_press_callback(uint8_t button_id,
                                         void *context)
 {
     if (button_id >= BUTTON_APP_COUNT)
+    {
+        return false;
+    }
+
+    if (initialized && !enabled[button_id])
     {
         return false;
     }

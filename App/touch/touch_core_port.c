@@ -112,6 +112,47 @@ uint32_t touch_core_port_params_hash(void)
     return teno_touch_params_hash(&core.params);
 }
 
+uint32_t touch_core_port_features(void)
+{
+    return teno_touch_core_features();
+}
+
+int32_t touch_core_port_set_zone_tuning(uint8_t group,
+                                        double diff_trig,
+                                        double deriv_trig,
+                                        double deriv_rel,
+                                        double diff_rel)
+{
+    if (!initialized)
+    {
+        touch_core_port_reset();
+    }
+
+    return teno_touch_core_set_zone_tuning(&core, group, diff_trig, deriv_trig,
+                                           deriv_rel, diff_rel);
+}
+
+void touch_core_port_reset_zone(uint8_t group)
+{
+    uint8_t channel;
+
+    if (!initialized)
+    {
+        touch_core_port_reset();
+    }
+
+    teno_touch_core_reset_zone(&core, group);
+
+    /* 核心只清通道状态；本层缓存的输出也要跟着清，避免读到上一帧。 */
+    for (channel = 0U; channel < TENO_TOUCH_CHANNELS; ++channel)
+    {
+        if (core.params.channel_group[channel] == group)
+        {
+            memset(&decisions[channel], 0, sizeof(decisions[channel]));
+        }
+    }
+}
+
 const TenoTouchDecision *touch_core_port_decision(uint8_t channel)
 {
     if (channel >= TENO_TOUCH_CHANNELS)

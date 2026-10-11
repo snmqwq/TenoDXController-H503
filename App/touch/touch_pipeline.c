@@ -19,7 +19,7 @@ uint32_t HAL_GetTick(void);
 #define PIPELINE_DEVICE_MASK    ((1U << PIPELINE_DEVICE_COUNT) - 1U)
 #define PIPELINE_MAX_BATCH_FRAMES 64U
 /*
- * TouchHost applies report_rate_hz independently to each board after the
+ * TouchHost-kaede applies report_rate_hz independently to each board after the
  * baseline is ready. The firmware uses the same nominal rate for the
  * device-side path so the two implementations consume the same updates.
  */
@@ -67,7 +67,7 @@ static uint8_t connected_device_mask;
 static uint8_t forced_device_mask;
 
 /*
- * Per-board consumption token buckets, matching TouchHost's
+ * Per-board consumption token buckets, matching TouchHost-kaede's
  * dev1_budget / dev2_budget. They are only consulted after calibration.
  */
 static double rate_budget[PIPELINE_DEVICE_COUNT];
@@ -421,7 +421,7 @@ void touch_pipeline_commit_batch(const uint8_t *packets,
     }
 
     /*
-     * Apply TouchHost's post-calibration rate limit before any IIR or
+     * Apply TouchHost-kaede's post-calibration rate limit before any IIR or
      * detector state changes. Alpha spends each board's budget while walking
      * the drained batch from newest to oldest, so a short burst keeps the
      * latest update.
@@ -600,7 +600,7 @@ void touch_pipeline_commit_batch(const uint8_t *packets,
                 }
                 state = PIPELINE_STATE_READY;
                 /*
-                 * TouchHost's process_packet returns None on the frame that
+                 * TouchHost-kaede's process_packet returns None on the frame that
                  * freezes the baseline. The first judged frame is the next
                  * accepted packet, not this one.
                  */

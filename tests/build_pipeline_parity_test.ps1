@@ -1,4 +1,4 @@
-# Build and run the host-side parity test for the firmware TouchHost port.
+# Build and run the host-side parity test for the firmware TouchHost-kaede port.
 #
 # It compiles the REAL touch_pipeline.c / touch_core_port.c / config sources
 # plus the shared teno_touch_core.c (the single detector source of truth),

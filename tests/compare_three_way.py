@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Compare TouchHost, melonloader and STM32 full-pipeline outputs.
+"""Compare TouchHost-kaede, melonloader and STM32 full-pipeline outputs.
 
 Usage:
     python tests/compare_three_way.py <python.csv> <csharp.csv> <per.csv>
 
 The three files must have the same row ordering. The comparison uses
-TouchHost as the source of truth and reports the first differing frame.
+TouchHost-kaede as the source of truth and reports the first differing frame.
 """
 
 from __future__ import annotations

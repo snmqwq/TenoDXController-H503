@@ -1,7 +1,7 @@
 /*
- * Host-side regression for the firmware copy of TouchHost's signal path.
+ * Host-side regression for the firmware copy of TouchHost-kaede's signal path.
  *
- * The test compiles the real touch_pipeline.c / button_detector.c against a
+ * The test compiles the real touch_pipeline.c / touch_core_port.c against a
  * tiny mai2touch stub. It feeds deterministic raw frames and asserts the
  * properties that differ between "looks similar" and "is the same pipeline":
  *
@@ -9,7 +9,7 @@
  *   2. 100 warm-up + 100 calibration packets are required before detection;
  *   3. duplicate board payloads do not advance either counter;
  *   4. IIR uses the same seed/truncation rule as ChannelFilter;
- *   5. A-zone release and simple-zone dead-band memory follow detector.py.
+ *   5. A-zone release and simple-zone dead-band memory come from the shared core.
  *
  * Build and run: tests/build_pipeline_parity_test.ps1
  */
@@ -94,7 +94,7 @@ int main(void)
 {
     int changed_packets = 0;
 
-    printf("=== firmware TouchHost-equivalent pipeline test ===\n");
+    printf("=== firmware TouchHost-kaede-equivalent pipeline test ===\n");
 
     touch_pipeline_init();
     touch_pipeline_set_device_masks(0x03U, 0x00U);

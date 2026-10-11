@@ -30,6 +30,23 @@ uint32_t touch_core_port_abi_version(void);
 uint32_t touch_core_port_algorithm_version(void);
 uint32_t touch_core_port_params_hash(void);
 
+/* 核心能力位：返回 0 之外的值表示支持运行期调参。 */
+uint32_t touch_core_port_features(void);
+
+/*
+ * 运行期覆盖 B/C/D/E 的四个判定数值 (A 区不可覆盖)。
+ * 返回值是核心返回码：0 成功，负数为 TENO_TOUCH_ERR_*。
+ * 数值范围与关系约束由核心校验，本层不做二次判定。
+ */
+int32_t touch_core_port_set_zone_tuning(uint8_t group,
+                                        double diff_trig,
+                                        double deriv_trig,
+                                        double deriv_rel,
+                                        double diff_rel);
+
+/* 复位某区所有通道的判定状态 (切换配置 / 重新校准后)。 */
+void touch_core_port_reset_zone(uint8_t group);
+
 /* 返回该通道最近一次判定输出；通道非法时返回 NULL。 */
 const TenoTouchDecision *touch_core_port_decision(uint8_t channel);
 
