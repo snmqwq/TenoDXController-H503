@@ -109,12 +109,18 @@ uint32_t touch_core_port_algorithm_version(void)
 
 uint32_t touch_core_port_params_hash(void)
 {
+    if (!initialized)
+    {
+        touch_core_port_reset();
+    }
+
     return teno_touch_params_hash(&core.params);
 }
 
 uint32_t touch_core_port_features(void)
 {
-    return teno_touch_core_features();
+    /* 当前保留的旧版核心没有运行期调参导出；端口层也不伪造该能力。 */
+    return 0U;
 }
 
 int32_t touch_core_port_set_zone_tuning(uint8_t group,
@@ -123,13 +129,12 @@ int32_t touch_core_port_set_zone_tuning(uint8_t group,
                                         double deriv_rel,
                                         double diff_rel)
 {
-    if (!initialized)
-    {
-        touch_core_port_reset();
-    }
-
-    return teno_touch_core_set_zone_tuning(&core, group, diff_trig, deriv_trig,
-                                           deriv_rel, diff_rel);
+    (void)group;
+    (void)diff_trig;
+    (void)deriv_trig;
+    (void)deriv_rel;
+    (void)diff_rel;
+    return TOUCH_CORE_PORT_ERR_UNSUPPORTED;
 }
 
 void touch_core_port_reset_zone(uint8_t group)
@@ -141,13 +146,12 @@ void touch_core_port_reset_zone(uint8_t group)
         touch_core_port_reset();
     }
 
-    teno_touch_core_reset_zone(&core, group);
-
-    /* 核心只清通道状态；本层缓存的输出也要跟着清，避免读到上一帧。 */
+    /* 旧版核心没有整区 API，但公开了逐通道复位；语义保持一致。 */
     for (channel = 0U; channel < TENO_TOUCH_CHANNELS; ++channel)
     {
         if (core.params.channel_group[channel] == group)
         {
+            teno_touch_core_reset_channel(&core, channel);
             memset(&decisions[channel], 0, sizeof(decisions[channel]));
         }
     }

@@ -79,6 +79,15 @@ static uint8_t button_app_read_gpio(uint8_t button_id)
  */
 static bool button_app_detect_installed(uint8_t button_id)
 {
+    /*
+     * Only the active-high main keys need the boot-time presence probe. The
+     * active-low config switches are legitimate at reset and must stay enabled.
+     */
+    if (button_id >= BUTTON_APP_MAIN_COUNT)
+    {
+        return true;
+    }
+
     return button_app_read_gpio(button_id) == GPIO_PIN_RESET;
 }
 

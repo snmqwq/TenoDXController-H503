@@ -30,7 +30,8 @@ uint32_t touch_core_port_abi_version(void);
 uint32_t touch_core_port_algorithm_version(void);
 uint32_t touch_core_port_params_hash(void);
 
-/* 核心能力位：返回 0 之外的值表示支持运行期调参。 */
+/* 旧版核心的端口能力：0 表示不接受运行期调参。 */
+#define TOUCH_CORE_PORT_ERR_UNSUPPORTED (-5)
 uint32_t touch_core_port_features(void);
 
 /*
