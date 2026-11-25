@@ -53,6 +53,10 @@ bool cdc_manager_is_io_mode(void) {
     return current_mode == CDC_MODE_IO;
 }
 
+bool cdc_manager_uses_touch_pipeline(void) {
+    return cdc_manager_is_mai2touch_active() || cdc_manager_is_io_mode();
+}
+
 void cdc_manager_set_io_mode(bool enabled) {
     if (enabled) {
         if (current_mode != CDC_MODE_IO) {

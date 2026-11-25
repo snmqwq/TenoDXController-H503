@@ -71,10 +71,8 @@ static TenodataChannelMapping const *active_mapping = default_mapping;
 /*
  * Scan parameters are fixed; mapping.block only selects one of these rows.
  *
- * These are the local fallback used in Mai2Touch mode (no host config frame).
- * They are kept identical to TouchHost-kaede/config.yaml zone_params, which is
- * what the raw/host path sends in the 139-byte config frame, so switching modes
- * does not change the capacitance working point.
+ * Mai2Touch and cold IO initialization use these local profiles. IO can
+ * reuse scan parameters previously received in a valid raw configuration.
  */
 static TenodataChannelConfig const block_profiles[5] =
     {

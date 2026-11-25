@@ -6,14 +6,11 @@
 #include "main.h"
 #include "tenodata.h"
 #include "touch_pipeline.h"
-#include <string.h>
 
 /*
  * IO protocol (host -> device command):
  *
- *   A6 02 01 A9
- *
- * The payload byte is currently reserved and must be 0x01 to enable IO.
+ *   A6 02 01 A9 (enable), A6 02 00 A8 (disable).
  * The trailing byte is an 8-bit sum of the preceding bytes.
  *
  * IO protocol (device -> host state packet):
@@ -27,15 +24,12 @@
  */
 #define IO_MODE_CMD_HEADER_0       0xA6U
 #define IO_MODE_CMD_HEADER_1       0x02U
-#define IO_MODE_CMD_ENABLE         0x01U
-#define IO_MODE_CMD_LENGTH         4U
 #define IO_MODE_STATE_HEADER       0xA5U
 #define IO_MODE_STATE_LENGTH       9U
 #define IO_MODE_REPORT_PERIOD_MS   2U
 
 static bool enabled;
-static uint8_t rx_frame[IO_MODE_CMD_LENGTH];
-static uint8_t rx_length;
+static uint32_t rx_command;
 static uint32_t next_report_tick;
 static uint8_t sequence;
 
@@ -93,7 +87,7 @@ static void io_mode_send_state(void)
 void io_mode_init(void)
 {
     enabled = false;
-    rx_length = 0U;
+    rx_command = 0U;
     next_report_tick = 0U;
     sequence = 0U;
 }
@@ -107,25 +101,12 @@ void io_mode_set_enabled(bool value)
 
     cdc_manager_set_io_mode(value);
     enabled = value;
-    rx_length = 0U;
+    rx_command = 0U;
     next_report_tick = HAL_GetTick();
 
-    if (value)
-    {
-        /*
-         * IO mode is a CDC0 consumer, not the HID path. Stop the HID task
-         * from reporting so a connected host cannot see duplicate input.
-         */
-        keyboard_app_set_io_mode(true);
-        touch_pipeline_init();
-        tenodata_request_reconfigure();
-    }
-    else
-    {
-        keyboard_app_set_io_mode(false);
-        touch_pipeline_init();
-        tenodata_request_reconfigure();
-    }
+    keyboard_app_set_io_mode(value);
+    /* Reconfiguration also clears the previous bitmap before I2C drains. */
+    tenodata_request_reconfigure();
 }
 
 bool io_mode_is_enabled(void)
@@ -133,54 +114,18 @@ bool io_mode_is_enabled(void)
     return enabled;
 }
 
-bool io_mode_consume_rx_byte(uint8_t byte)
+bool io_mode_observe_rx_byte(uint8_t byte)
 {
-    uint8_t sum;
-
-    if (rx_length == 0U)
+    /* Match the last four wire bytes, also when split across USB reads.
+     * A stray A6 cannot consume the next Raw header or Mai2Touch command. */
+    rx_command = (rx_command << 8) | byte;
+    uint8_t mode = (uint8_t)(rx_command >> 8);
+    if ((rx_command >> 16) != ((IO_MODE_CMD_HEADER_0 << 8) | IO_MODE_CMD_HEADER_1) ||
+        byte != (uint8_t)(IO_MODE_CMD_HEADER_0 + IO_MODE_CMD_HEADER_1 + mode))
     {
-        if (byte != IO_MODE_CMD_HEADER_0)
-        {
-            return false;
-        }
-
-        rx_frame[0] = byte;
-        rx_length = 1U;
-        return true;
+        return false;
     }
-
-    if (rx_length == 1U)
-    {
-        if (byte != IO_MODE_CMD_HEADER_1)
-        {
-            rx_length = 0U;
-            return true;
-        }
-
-        rx_frame[1] = byte;
-        rx_length = 2U;
-        return true;
-    }
-
-    if (rx_length < IO_MODE_CMD_LENGTH)
-    {
-        rx_frame[rx_length++] = byte;
-    }
-
-    if (rx_length < IO_MODE_CMD_LENGTH)
-    {
-        return true;
-    }
-
-    sum = (uint8_t)(rx_frame[0] + rx_frame[1] + rx_frame[2]);
-    if ((rx_frame[0] == IO_MODE_CMD_HEADER_0) &&
-        (rx_frame[1] == IO_MODE_CMD_HEADER_1) &&
-        (rx_frame[3] == sum))
-    {
-        io_mode_set_enabled(rx_frame[2] != 0U);
-    }
-
-    rx_length = 0U;
+    io_mode_set_enabled(mode != 0U);
     return true;
 }
 

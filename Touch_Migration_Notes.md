@@ -437,6 +437,19 @@
     `docs/TENO-TOUCH-CORE-DISTRIBUTION.md`）。
 - **限制**: 实机触摸验证仍为 pending；真实 `raw-cdc-70b` 数据集仍未采集。
 
+### 节点 19（2026-11-25） IO 冷启动、触摸上报与主键恢复
+
+**背景与复现**　原版从冷启动进入 IO 后等待上位机参数。先用 raw 配置两片 PSoC 再切入 IO 时，两片已校准且持续采样，固件触摸管线仍停在预热，对 E4 加入按下信号后 CDC0 触摸位仍为零。开机按住的主键也会在本次上电期间一直屏蔽。
+
+**变更**
+
+- IO 启动时优先沿用有效的 raw 参数覆盖。没有覆盖时，按当前映射的本地扫描参数配置并校准两片 PSoC。raw 继续用 `0x01` 请求缺少的参数。
+- IO 与 Mai2Touch 都提交校准后的 I²C 样本。预热和基线采集完成后，IO 将共享核心的 34 位结果放入 `A5` 状态帧。Mai2Touch 保持原来的 5 bit 分组。
+- raw 与 Mai2Touch 的接收端均识别完整 IO 命令，关闭 IO 后把后续字节交回原自动或强制模式。处于接收中的 raw 参数帧独占载荷和校验和。
+- 开机为高的主键先屏蔽，连续三个 5 ms 采样点为低后启用。正常游戏输入直接读取主键，副键保持消抖。IO 上报 BTN0..10，BTN11 走 HID。
+
+**验证**　宿主回归模拟两片 PSoC 的 I²C 寄存器、GPIO 和 USB 端点，运行固件的初始化、采样、判定和发包代码。检查 E4/E8 分别按下与释放、两种 9 B 帧、参数覆盖与协议切换，以及 HID 实际键码。入口为 `tests/build_native_io_test.ps1` 和 `tests/build_native_button_test.ps1`。CubeIDE ARM Release 构建通过。实物板验证待进行。
+
 ---
 
 ## 当前文件结构
@@ -450,9 +463,11 @@ App/touch/
 ├── touch_pipeline.h/c            ← 软件基线、逐通道调用共享判定核心、区域 OR 合并
 ├── touch_core_port.h/c           ← 固件侧适配层（映射 + 逐帧数据 → 共享判定核心）
 ├── mai2touch.h/c                 ← Mai2Touch 协议
+├── io_mode.h/c                   ← IO 模式命令、按键和触摸 A5 帧
 └── cdc_manager.h/c               ← CDC0 收发管理 + 路由开关（AUTO / 强制）
 tests/
 ├── native_mode_test.c            ← 本机单测（编译真实模块，不需板子）
+├── native_io_touch_test.c        ← 从双 PSoC 寄存器和 GPIO 验证 CDC0 与 HID 报文
 ├── pipeline_parity_test.c        ← Mai2Touch/TouchHost 管线等价回归
 ├── native_stubs/                 ← TinyUSB / HAL stub 头
 ├── build_native_test.ps1         ← 用 MinGW gcc 构建并运行模式识别测试
@@ -462,10 +477,11 @@ tests/
 > 判定实现不在本仓库：它属于根目录 `touch_core/`，由本固件编入源码使用。
 
 ## CDC 路由规则
-| 模式 | tenodata 发送 | mai2touch 发送 | CDC RX 分发 |
-|:---:|:---:|:---:|:---:|
-| `AUTO_RAW` / `FORCED_RAW` | 正常发送 | 丢弃 | tenodata（喂识别器找 `{`) |
-| `AUTO_MAI2TOUCH` / `FORCED_MAI2TOUCH` | 丢弃 | 正常发送 | mai2touch（喂识别器找 `0xAA 0x01`） |
+| 当前模式 | CDC0 发送端 | CDC0 接收 |
+| --- | --- | --- |
+| `AUTO_RAW` / `FORCED_RAW` | tenodata 的 70 B 帧 | tenodata 接收参数，帧间可识别 IO。自动模式也识别完整的 Mai2Touch 命令 |
+| `AUTO_MAI2TOUCH` / `FORCED_MAI2TOUCH` | mai2touch 的回显与位图帧 | mai2touch 接收游戏命令或 IO 命令，自动模式也识别 raw 帧头 |
+| `CDC_MODE_IO` | io_mode 的 9 B 状态帧 | tenodata 接收 IO 控制命令，关闭后恢复进入前的模式 |
 
 自动识别只在 `AUTO_*` 下生效；`FORCED_*` 由 Magic `touch` 参数 `0x02` 写入 `0`/`1` 设定，
 写 `2` 恢复 AUTO。

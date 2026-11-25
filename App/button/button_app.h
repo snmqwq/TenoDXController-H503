@@ -22,10 +22,8 @@ extern "C" {
  * read the main keys immediately. BTN8..BTN11 are bare switches and keep the
  * debounced state.
  *
- * Every key is probed once at power-up: a channel that already reads high has
- * no key installed and is disabled for the whole session, so it never reports
- * presses to the HID keyboard, CDC0 IO mode, the idle lights or long-press
- * callbacks.
+ * A main key that reads high at power-up is held pending until a stable low
+ * (released) level confirms its presence. Config keys are enabled at boot.
  */
 
 typedef void (*button_app_callback_t)(uint8_t button_id, void *context);

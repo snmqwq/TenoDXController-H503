@@ -95,7 +95,7 @@ static void consume_command(void)
     {
         uint8_t byte = g_rx[0];
         memmove(g_rx, g_rx + 1, (size_t)(--g_rx_len));
-        (void)io_mode_consume_rx_byte(byte);
+        (void)io_mode_observe_rx_byte(byte);
     }
 }
 
@@ -105,14 +105,14 @@ int main(void)
 
     cdc_manager_init();
     io_mode_init();
-    check(!io_mode_is_enabled(), "power-on defaults to HID mode");
+    check(!io_mode_is_enabled(), "game IO is disabled at power-on");
     check(!cdc_manager_is_io_mode(), "CDC0 still uses the raw route");
 
     push_command(1U);
     consume_command();
     check(io_mode_is_enabled(), "enable command switches to IO mode");
     check(cdc_manager_is_io_mode(), "CDC0 route is IO");
-    check(g_keyboard_io_mode, "keyboard task is muted in IO mode");
+    check(g_keyboard_io_mode, "keyboard task selects the IO key routing");
     check(g_reconfigure_count == 1, "IO mode requests a PSoC reinitialize");
     check(!cdc_manager_try_send(false, (const uint8_t *)"x", 1U),
           "raw sender cannot share CDC0 in IO mode");
@@ -134,9 +134,9 @@ int main(void)
 
     push_command(0U);
     consume_command();
-    check(!io_mode_is_enabled(), "disable command returns to HID mode");
+    check(!io_mode_is_enabled(), "disable command leaves game IO");
     check(!cdc_manager_is_io_mode(), "CDC0 returns to the previous route");
-    check(!g_keyboard_io_mode, "keyboard task resumes");
+    check(!g_keyboard_io_mode, "keyboard task restores regular key routing");
 
     g_tx_len = 0;
     io_mode_task();

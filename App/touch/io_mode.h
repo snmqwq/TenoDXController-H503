@@ -22,9 +22,9 @@ void io_mode_init(void);
 void io_mode_set_enabled(bool enabled);
 bool io_mode_is_enabled(void);
 
-/* Process CDC0 input while IO mode is enabled. Returns true when a byte
- * belonged to the IO protocol and was consumed. */
-bool io_mode_consume_rx_byte(uint8_t byte);
+/* Observe a command-stream byte. Only a complete IO control frame returns
+ * true. Other bytes are still available to the active protocol parser. */
+bool io_mode_observe_rx_byte(uint8_t byte);
 
 /* Called from the main loop. */
 void io_mode_task(void);

@@ -366,7 +366,6 @@ void touch_pipeline_commit_batch(const uint8_t *packets,
      * 所以固定放 .bss。
      */
     static PendingPacket pending[PIPELINE_MAX_BATCH_FRAMES];
-    uint16_t accepted_count = 0U;
 
     if ((packets == NULL) || (packet_count == 0U))
     {
@@ -514,8 +513,6 @@ void touch_pipeline_commit_batch(const uint8_t *packets,
         {
             continue;
         }
-
-        accepted_count++;
 
         /* ---- IIR: update the accepted boards for this packet before its state is used. ---- */
         for (uint8_t psoc_index = 0U;

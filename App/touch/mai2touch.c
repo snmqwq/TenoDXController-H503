@@ -1,5 +1,6 @@
 #include "mai2touch.h"
 #include "cdc_manager.h"
+#include "io_mode.h"
 #include "main.h"
 #include "touch_mode.h"
 #include "touch_pipeline.h"
@@ -133,6 +134,11 @@ void mai2touch_process_rx(void) {
         uint8_t byte;
         cdc_manager_rx_read(&byte, 1);
 
+        if (io_mode_observe_rx_byte(byte)) {
+            rx_len = 0;
+            return;
+        }
+
         /* 喂给模式识别器: 若收到 raw 帧头 (0xAA 0x01) 会自动切回 raw 流程 */
         touch_mode_observe_byte(byte);
 
@@ -203,7 +209,7 @@ void mai2touch_task(void) {
     // 1. 处理接收命令
     mai2touch_process_rx();
 
-    if (!sending) {
+    if (!sending || !cdc_manager_is_mai2touch_active()) {
         last_sent_valid = false;
         return;
     }

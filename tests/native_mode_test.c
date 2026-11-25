@@ -55,6 +55,7 @@ static int g_reconfigure_count = 0;
 
 void tenodata_clear_host_config_override(void) { g_clear_override_count++; }
 void tenodata_request_reconfigure(void) { g_reconfigure_count++; }
+bool io_mode_observe_rx_byte(uint8_t byte) { (void)byte; return false; }
 
 /* ---------- 被测模块（真实源码） ---------- */
 #include "cdc_manager.c"

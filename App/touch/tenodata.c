@@ -606,7 +606,7 @@ static void finish_reboot_verification(uint8_t ready_mask, uint32_t now)
     {
         begin_running(0U, now);
     }
-    else if (!cdc_manager_is_mai2touch_active() &&
+    else if (!cdc_manager_uses_touch_pipeline() &&
              !host_config_override_valid)
     {
         /* tenodata 模式: 等待上位机下发扫描参数后再写 PSoC, 无超时 */
@@ -760,27 +760,25 @@ static void consume_host_config_frame(void)
 
         (void)cdc_manager_rx_read(&byte, 1U);
 
-        if (io_mode_consume_rx_byte(byte))
+        /* A raw frame owns its entire payload and checksum, including any
+         * bytes resembling a mode command. Between frames CDC0 can switch. */
+        if (host_cfg_rx_state != HOST_CFG_WAIT_PAYLOAD || io_mode_is_enabled())
         {
-            continue;
-        }
-        if (io_mode_is_enabled())
-        {
-            return;
-        }
-
-        /* 喂给模式识别器: 收到 `{` 会自动切到 Mai2Touch 流程 */
-        touch_mode_observe_byte(byte);
-
-        /* 一旦识别出对方是 Mai2Touch, 立刻停止消费 —— 剩下的字节属于
-         * 对方那条命令 (如 {RSET} 的 "SET}"), 必须留给 mai2touch 解析,
-         * 否则游戏会收不到完整命令而报错。
-         * 必须用 pending 判断: 切换在 touch_mode_task() 里才执行, 此刻
-         * cdc_manager 的活跃标志还是旧的。 */
-        if (touch_mode_pending_to_mai2touch() ||
-            cdc_manager_is_mai2touch_active())
-        {
-            return;
+            if (io_mode_observe_rx_byte(byte))
+            {
+                /* A disable may restore Mai2Touch. Leave trailing bytes
+                 * queued for the restored route's normal command parser. */
+                return;
+            }
+            if (io_mode_is_enabled())
+            {
+                continue;
+            }
+            touch_mode_observe_byte(byte);
+            if (touch_mode_pending_to_mai2touch())
+            {
+                return;
+            }
         }
 
         switch (host_cfg_rx_state)
@@ -1432,7 +1430,7 @@ void tenodata_task(void)
                         mark_device_unavailable(completed_device, now);
                     }
 
-                    if (cdc_manager_is_mai2touch_active() &&
+                    if (cdc_manager_uses_touch_pipeline() &&
                         (device != NULL) &&
                         device->connected &&
                         (device->raw[0] ==
@@ -1540,11 +1538,10 @@ void tenodata_task(void)
         }
 
         case STATE_WAIT_HOST_CONFIG:
-            /* 无超时等待上位机下发扫描参数; HID/aime/按键等任务
-             * 在主循环中并行运行不受影响。若期间切换为 mai2touch
-             * 模式, 则改用本地默认参数继续初始化。 */
+            /* Raw waits for host parameters. Both bitmap routes can use
+             * the local scan profile prepared by start_initialization(). */
             if (host_config_override_valid ||
-                cdc_manager_is_mai2touch_active())
+                cdc_manager_uses_touch_pipeline())
             {
                 state = STATE_WRITE_CONFIG_TO_PSOC;
             }
@@ -1562,7 +1559,7 @@ void tenodata_task(void)
         switch (state)
         {
             case STATE_RUNNING:
-                if (cdc_manager_is_mai2touch_active())
+                if (cdc_manager_uses_touch_pipeline())
                 {
                     if (pipeline_batch_count > 0U)
                     {

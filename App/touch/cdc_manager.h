@@ -25,6 +25,9 @@ void cdc_manager_set_mai2touch_active(bool active);
 // 当前是否按 Mai2Touch 工作 (AUTO 与 FORCED 两种来源都算)
 bool cdc_manager_is_mai2touch_active(void);
 
+/* True when the firmware must produce a touch bitmap for the active route. */
+bool cdc_manager_uses_touch_pipeline(void);
+
 // 是否处于自动识别模式
 bool cdc_manager_is_auto_mode(void);
 

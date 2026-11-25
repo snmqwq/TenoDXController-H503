@@ -11,6 +11,7 @@ static Button buttons[BUTTON_APP_COUNT];
 static button_app_callback_t long_press_callbacks[BUTTON_APP_COUNT];
 static void *long_press_contexts[BUTTON_APP_COUNT];
 static bool enabled[BUTTON_APP_COUNT];
+static uint8_t idle_samples[BUTTON_APP_MAIN_COUNT];
 static uint32_t last_button_tick;
 static bool initialized;
 
@@ -72,25 +73,6 @@ static uint8_t button_app_read_gpio(uint8_t button_id)
     }
 }
 
-/*
- * Keys are probed once at power-up. The key panel holds every connected
- * channel low while the key is idle, so a channel that already reads high
- * right after reset has no key installed and is disabled for the session.
- */
-static bool button_app_detect_installed(uint8_t button_id)
-{
-    /*
-     * Only the active-high main keys need the boot-time presence probe. The
-     * active-low config switches are legitimate at reset and must stay enabled.
-     */
-    if (button_id >= BUTTON_APP_MAIN_COUNT)
-    {
-        return true;
-    }
-
-    return button_app_read_gpio(button_id) == GPIO_PIN_RESET;
-}
-
 static void button_app_long_press_handler(Button *handle, void *user_data)
 {
     uint8_t button_id;
@@ -112,30 +94,33 @@ static void button_app_long_press_handler(Button *handle, void *user_data)
     }
 }
 
+static void button_app_enable(uint8_t button_id)
+{
+    Button *button = &buttons[button_id];
+    button_init(button, button_app_read_gpio,
+                button_app_active_level(button_id), button_id);
+    if (long_press_callbacks[button_id] != NULL)
+    {
+        button_attach(button, BTN_LONG_PRESS_START,
+                      button_app_long_press_handler, NULL);
+    }
+    (void)button_start(button);
+    enabled[button_id] = true;
+}
+
 void button_app_init(void)
 {
+    if (initialized)
+    {
+        return;
+    }
+
     for (uint8_t i = 0; i < BUTTON_APP_COUNT; i++)
     {
-        enabled[i] = button_app_detect_installed(i);
-
-        if (!enabled[i])
+        if (i >= BUTTON_APP_MAIN_COUNT || button_app_read_gpio(i) == GPIO_PIN_RESET)
         {
-            continue;
+            button_app_enable(i);
         }
-
-        uint8_t active_level = button_app_active_level(i);
-
-        button_init(&buttons[i], button_app_read_gpio, active_level, i);
-
-        if (long_press_callbacks[i] != NULL)
-        {
-            button_attach(&buttons[i],
-                          BTN_LONG_PRESS_START,
-                          button_app_long_press_handler,
-                          NULL);
-        }
-
-        (void)button_start(&buttons[i]);
     }
 
     initialized = true;
@@ -145,9 +130,26 @@ void button_app_task(void)
 {
     uint32_t now = HAL_GetTick();
 
-    if ((uint32_t)(now - last_button_tick) >= BUTTON_APP_TICK_INTERVAL_MS)
+    if (initialized && (uint32_t)(now - last_button_tick) >= BUTTON_APP_TICK_INTERVAL_MS)
     {
         last_button_tick = now;
+        /* A boot-high main input may be a held key or an empty pulled-up
+         * connector. Arm it once the panel has shown a stable idle level. */
+        for (uint8_t i = 0U; i < BUTTON_APP_MAIN_COUNT; ++i)
+        {
+            if (enabled[i])
+            {
+                continue;
+            }
+            if (button_app_read_gpio(i) != GPIO_PIN_RESET)
+            {
+                idle_samples[i] = 0U;
+            }
+            else if (++idle_samples[i] >= DEBOUNCE_TICKS)
+            {
+                button_app_enable(i);
+            }
+        }
         button_ticks();
     }
 }
@@ -220,15 +222,10 @@ bool button_app_set_long_press_callback(uint8_t button_id,
         return false;
     }
 
-    if (initialized && !enabled[button_id])
-    {
-        return false;
-    }
-
     long_press_callbacks[button_id] = callback;
     long_press_contexts[button_id] = context;
 
-    if (initialized)
+    if (initialized && enabled[button_id])
     {
         if (callback != NULL)
         {

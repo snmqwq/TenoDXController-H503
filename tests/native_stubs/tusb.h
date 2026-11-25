@@ -9,6 +9,19 @@
 
 #define TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP 0x20u
 
+/* Keyboard usages used by the real keyboard_app in the native IO test. */
+enum {
+    HID_KEY_A = 0x04, HID_KEY_C = 0x06, HID_KEY_D = 0x07, HID_KEY_E = 0x08,
+    HID_KEY_Q = 0x14, HID_KEY_W = 0x1a, HID_KEY_X = 0x1b, HID_KEY_Z = 0x1d,
+    HID_KEY_3 = 0x20, HID_KEY_8 = 0x25, HID_KEY_9 = 0x26,
+    HID_KEY_KEYPAD_1 = 0x59, HID_KEY_KEYPAD_2, HID_KEY_KEYPAD_3,
+    HID_KEY_KEYPAD_4, HID_KEY_KEYPAD_6 = 0x5e, HID_KEY_KEYPAD_7,
+    HID_KEY_KEYPAD_8, HID_KEY_KEYPAD_9
+};
+typedef uint8_t hid_report_type_t;
+bool tud_hid_n_ready(uint8_t instance);
+bool tud_hid_n_report(uint8_t instance, uint8_t report_id, const void *report, uint16_t length);
+
 extern uint8_t *tusb_stub_rx_buffer(void);
 extern int *tusb_stub_rx_len(void);
 extern uint8_t *tusb_stub_tx_buffer(void);
